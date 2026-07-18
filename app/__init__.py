@@ -44,6 +44,7 @@ def create_app(config_class=Config):
     from app.routes.dashboard import dashboard_bp
     from app.routes.customers import customers_bp
     from app.routes.captain_signup import captain_signup_bp
+    from app.routes.legal import legal_bp
     from app.routes.complaints import complaints_bp
     from app.routes.sos import sos_bp
     from app.routes.reports import reports_bp
@@ -64,6 +65,7 @@ def create_app(config_class=Config):
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(customers_bp)
     app.register_blueprint(captain_signup_bp)
+    app.register_blueprint(legal_bp)
     app.register_blueprint(complaints_bp)
     app.register_blueprint(sos_bp)
     app.register_blueprint(reports_bp)
