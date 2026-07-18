@@ -77,6 +77,108 @@ def _rate_limit_customer(customer_id: int) -> bool:
     return int(n) <= limit
 
 
+# ---------- captain profile & discipline ----------
+
+@rides_api_bp.post("/driver/change-password")
+@jwt_required()
+def driver_change_password():
+    """First-login flow: captain must change from the default password."""
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    driver = db.session.get(Driver, did)
+    if driver is None:
+        return jsonify({"error": "not_found"}), 404
+    data = request.json or {}
+    current = data.get("current_password") or ""
+    new_pw = (data.get("new_password") or "").strip()
+    if len(new_pw) < 6:
+        return jsonify({"error": "password_too_short", "message_ar": "كلمة السر لازم ٦ حروف على الأقل."}), 400
+    if driver.password_hash and not driver.check_password(current):
+        return jsonify({"error": "wrong_current_password"}), 401
+    driver.set_password(new_pw)
+    driver.must_change_password = False
+    db.session.commit()
+    return jsonify({"changed": True})
+
+
+@rides_api_bp.get("/driver/earnings")
+@jwt_required()
+def driver_earnings():
+    """Today / this week / this month summary for the captain home dashboard."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+
+    now = datetime.utcnow()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = day_start - timedelta(days=day_start.weekday())  # Monday
+    month_start = day_start.replace(day=1)
+
+    def _bucket(start: datetime) -> dict:
+        rows = (
+            Ride.query.filter(
+                Ride.driver_id == did,
+                Ride.status == "completed",
+                Ride.completed_at >= start,
+            )
+            .with_entities(
+                func.count(Ride.id),
+                func.sum(Ride.price_egp),
+                func.sum(Ride.commission_egp),
+            )
+            .first()
+        )
+        trips = int(rows[0] or 0)
+        gross = float(rows[1] or 0)
+        commission = float(rows[2] or 0)
+        return {
+            "trips": trips,
+            "gross_egp": gross,
+            "commission_egp": commission,
+            "net_egp": round(gross - commission, 2),
+        }
+
+    return jsonify(
+        {
+            "today": _bucket(day_start),
+            "this_week": _bucket(week_start),
+            "this_month": _bucket(month_start),
+            "commission_rate": float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")),
+        }
+    )
+
+
+@rides_api_bp.get("/driver/discipline")
+@jwt_required()
+def driver_discipline():
+    """Rejection count + warning state — powers the yellow banner in the captain app."""
+    from app.services import captain_discipline
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    return jsonify(captain_discipline.get_state(did))
+
+
+@rides_api_bp.post("/driver/fcm-token")
+@jwt_required()
+def driver_fcm_token():
+    """Store the captain's FCM token for background trip-offer push notifications."""
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    data = request.json or {}
+    token = (data.get("token") or "").strip()
+    platform = (data.get("platform") or "").strip() or "unknown"
+    if not token:
+        return jsonify({"error": "token_required"}), 400
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    r.hset(f"driver:{did}:fcm", mapping={"token": token, "platform": platform})
+    return jsonify({"stored": True})
+
+
 # ---------- captain availability (mirror of the /driver socket, over HTTP) ----------
 # The Flutter app uses the WebSocket for low latency, but HTTP is available for
 # load tests and captains on poor connections.
@@ -490,6 +592,70 @@ def rides_complaint_ride(ride_id: int):
         ride_id=ride.id,
     )
     return jsonify({"id": c.id, "status": c.status}), 201
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/reject")
+@jwt_required()
+def rides_reject(ride_id: int):
+    """Captain rejects a trip offer. Increments daily rejection counter and
+    applies discipline (warn @ 5, suspend @ 10) per Decision #12.
+
+    Also removes this driver from the current broadcast's `offered_to` set so
+    the matching engine can move on.
+    """
+    from app.services import captain_discipline
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    # Only reject if the offer is still active (broadcasting) and the driver was in the offer set
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    key = f"broadcast:{ride_id}:offered_to"
+    r.srem(key, str(did))
+
+    summary = captain_discipline.register_rejection(did)
+    return jsonify({"rejected": True, **summary})
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/rate-customer")
+@jwt_required()
+def rides_rate_customer(ride_id: int):
+    """Captain rates the customer 1-5 stars after a completed trip."""
+    from app.models.captain_rating import CaptainRatingOfCustomer
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None or ride.driver_id != did:
+        return jsonify({"error": "forbidden"}), 403
+    if ride.status != "completed":
+        return jsonify({"error": "not_completed"}), 409
+
+    # Reject duplicates
+    existing = CaptainRatingOfCustomer.query.filter_by(ride_id=ride_id, driver_id=did).first()
+    if existing:
+        return jsonify({"error": "already_rated"}), 409
+
+    data = request.json or {}
+    try:
+        stars = int(data.get("stars"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "stars_required"}), 400
+    if not 1 <= stars <= 5:
+        return jsonify({"error": "stars_out_of_range"}), 400
+
+    row = CaptainRatingOfCustomer(
+        ride_id=ride_id,
+        driver_id=did,
+        customer_id=ride.customer_id,
+        stars=stars,
+        comment=(data.get("comment") or "").strip()[:500] or None,
+    )
+    db.session.add(row)
+    db.session.commit()
+    return jsonify({"rated": True, "stars": stars})
 
 
 @rides_api_bp.post("/rides/<int:ride_id>/no-show")

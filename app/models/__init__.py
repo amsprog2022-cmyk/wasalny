@@ -13,6 +13,7 @@ from app.models.ops import (
     Complaint, ComplaintComment, SosAlert, Ban, CreditAdjustment,
     AdminBroadcast, Announcement, AuditLog,
 )
+from app.models.captain_rating import CaptainRatingOfCustomer
 
 __all__ = [
     "User",
@@ -39,4 +40,5 @@ __all__ = [
     "AdminBroadcast",
     "Announcement",
     "AuditLog",
+    "CaptainRatingOfCustomer",
 ]
