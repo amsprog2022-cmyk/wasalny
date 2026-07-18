@@ -83,6 +83,7 @@ def create_app(config_class=Config):
     with app.app_context():
         db.create_all()
         _bootstrap_admin(app)
+        _bootstrap_zones(app)
 
     return app
 
@@ -100,3 +101,42 @@ def _bootstrap_admin(app):
         db.session.add(admin)
         db.session.commit()
         print(f"[bootstrap] Created initial admin: {admin.email}")
+
+
+def _bootstrap_zones(app):
+    """Seed the 5 test Benha zones + 25 price rows if the table is empty.
+
+    Runs once on first boot in production so the app is immediately usable
+    without manually running seed scripts.
+    """
+    from decimal import Decimal
+    from app.models.zone import Zone, ZonePricing
+
+    if Zone.query.count() > 0:
+        return
+
+    test_zones = [
+        ("ramla",          "الرملة",       "El Ramla"),
+        ("downtown",       "وسط البلد",     "Downtown"),
+        ("university",     "جامعة بنها",    "Benha University"),
+        ("sarayat",        "السرايات",     "El Sarayat"),
+        ("damanhour_road", "طريق دمنهور",  "Damanhour Road"),
+    ]
+    zones = []
+    for slug, name_ar, name_en in test_zones:
+        z = Zone(slug=slug, name_ar=name_ar, name_en=name_en, is_active=True)
+        db.session.add(z)
+        zones.append(z)
+    db.session.commit()
+
+    same, cross = Decimal("20.00"), Decimal("25.00")
+    for f in zones:
+        for t in zones:
+            db.session.add(
+                ZonePricing(
+                    from_zone_id=f.id, to_zone_id=t.id,
+                    price_egp=(same if f.id == t.id else cross),
+                )
+            )
+    db.session.commit()
+    print(f"[bootstrap] Seeded {len(zones)} zones + {len(zones)**2} price rows")
