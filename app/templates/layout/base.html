@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}وصلني بنها{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg:        '#111125',
+            'bg-deep': '#050819',
+            surface:   '#1E1E32',
+            'surface-raised': '#292A3C',
+            primary:   '#F57C00',
+            'primary-hover': '#FB8C1E',
+            success:   '#22C55E',
+            warning:   '#FBC02D',
+            'text-muted': '#9BA3A8',
+          },
+          borderRadius: { card: '16px' },
+          fontFamily: {
+            arabic: ['"Cairo"', '"Tajawal"', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="bg-bg text-white h-screen flex flex-col font-arabic" style="font-family: 'Cairo', sans-serif;">
+
+  {% if current_user.is_authenticated %}
+  <nav class="bg-surface border-b border-white/5 px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-5 text-sm">
+      <a href="{{ url_for('dashboard.home') }}" class="font-bold text-lg text-primary">🚗 وصلني بنها</a>
+      <a href="{{ url_for('dashboard.home') }}" class="text-white/80 hover:text-primary">الرئيسية</a>
+      <a href="{{ url_for('rides.index') }}" class="text-white/80 hover:text-primary">الرحلات</a>
+      <a href="{{ url_for('drivers.index') }}" class="text-white/80 hover:text-primary">الكباتن</a>
+      <a href="{{ url_for('customers.index') }}" class="text-white/80 hover:text-primary">العملاء</a>
+      <a href="{{ url_for('inbox.index') }}" class="text-white/80 hover:text-primary">الرسايل</a>
+      <a href="{{ url_for('alerts.index') }}" class="text-white/80 hover:text-primary">التنبيهات</a>
+      <a href="{{ url_for('complaints.index') }}" class="text-white/80 hover:text-primary">الشكاوى</a>
+      <a href="{{ url_for('sos.index') }}" class="text-white/80 hover:text-primary">🆘 نجدة</a>
+      <a href="{{ url_for('reports.index') }}" class="text-white/80 hover:text-primary">التقارير</a>
+      <a href="{{ url_for('marketing.index') }}" class="text-white/80 hover:text-primary">الحملات</a>
+      <a href="{{ url_for('zones.index') }}" class="text-white/80 hover:text-primary">المناطق</a>
+      <a href="{{ url_for('pricing.index') }}" class="text-white/80 hover:text-primary">الأسعار</a>
+      <a href="{{ url_for('audit.index') }}" class="text-text-muted hover:text-primary text-xs">السجلات</a>
+    </div>
+    <div class="flex items-center gap-4 text-sm">
+      <span class="text-white/80">{{ current_user.name }} <span class="text-text-muted">({{ current_user.role }})</span></span>
+      <a href="{{ url_for('auth.logout') }}" class="text-text-muted hover:text-white">خروج</a>
+    </div>
+  </nav>
+  {% endif %}
+
+  <main class="flex-1 overflow-auto">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <div class="px-6 py-2 text-sm {% if cat == 'error' %}bg-red-900/40 text-red-200{% else %}bg-green-900/40 text-green-200{% endif %}">
+          {{ msg }}
+        </div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

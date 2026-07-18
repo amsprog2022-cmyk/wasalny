@@ -1,0 +1,116 @@
+{% extends "layout/base.html" %}
+{% block title %}التقارير · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto space-y-6">
+
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">التقارير</h1>
+      <p class="text-text-muted text-sm">
+        الفترة: {{ start.strftime('%d %b') }} ← {{ end.strftime('%d %b') }}
+      </p>
+    </div>
+    <div class="flex gap-2 items-center">
+      {% for slug, label in [('today','النهارده'), ('7d','آخر ٧ أيام'), ('30d','آخر ٣٠ يوم')] %}
+        <a href="{{ url_for('reports.index', range=slug) }}"
+           class="px-4 py-2 rounded-full text-sm {% if rng == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
+          {{ label }}
+        </a>
+      {% endfor %}
+      <a href="{{ url_for('reports.index', range=rng, export='csv') }}" class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">📄 حمّل CSV</a>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-5 gap-4">
+    <div class="card text-center">
+      <div class="text-3xl font-bold">{{ financial.trips }}</div>
+      <div class="text-text-muted text-xs">رحلات خلصت</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold">{{ '%.0f'|format(financial.gross) }}</div>
+      <div class="text-text-muted text-xs">إجمالي (ج.م)</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-primary">{{ '%.0f'|format(financial.commission) }}</div>
+      <div class="text-text-muted text-xs">نصيب وصلني (١٥٪)</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-success">{{ '%.0f'|format(financial.captain_net) }}</div>
+      <div class="text-text-muted text-xs">صافي الكباتن (٨٥٪)</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-warning">{{ '%.0f'|format(financial.no_show_fees) }}</div>
+      <div class="text-text-muted text-xs">غرامات ماحضرش</div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-3 gap-4">
+    <div class="card">
+      <p class="text-text-muted text-xs">عملاء نشيطين / كل العملاء</p>
+      <p class="text-2xl font-bold">{{ customers.active }} / {{ customers.total }}</p>
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">الشكاوى في الفترة دي</p>
+      <p class="text-2xl font-bold">{{ complaints.total }} <span class="text-warning text-sm">({{ complaints.open }} مفتوحة)</span></p>
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">نوع الشكاوى</p>
+      <p class="text-xs">
+        {% for cat, n in complaints.by_category.items() %}
+          <span class="ml-2">{{ cat }}: <span class="font-bold">{{ n }}</span></span>
+        {% else %}
+          <span class="text-text-muted">مفيش</span>
+        {% endfor %}
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">🏆 أشطر الكباتن</h2>
+    {% if top_captains %}
+      <table class="w-full text-sm">
+        <thead class="text-text-muted">
+          <tr>
+            <th class="text-right py-2">#</th>
+            <th class="text-right py-2">الكابتن</th>
+            <th class="text-right py-2">رحلات</th>
+            <th class="text-right py-2">إجمالي</th>
+            <th class="text-right py-2">التقييم</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in top_captains %}
+            <tr class="border-t border-white/5">
+              <td class="py-2 text-text-muted">{{ loop.index }}</td>
+              <td class="py-2">
+                <a href="{{ url_for('drivers.show', driver_id=c.id) }}" class="text-primary hover:underline">{{ c.name }}</a>
+              </td>
+              <td class="py-2">{{ c.trips }}</td>
+              <td class="py-2 font-mono">{{ '%.0f'|format(c.gross) }} ج.م</td>
+              <td class="py-2">⭐ {{ '%.1f'|format(c.rating) if c.rating is not none else '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش رحلات في الفترة دي.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">🗺️ الطرق الأكثر استخداماً</h2>
+    {% if popular_routes %}
+      <ul class="space-y-2">
+        {% for r in popular_routes %}
+          <li class="flex items-center justify-between text-sm border-b border-white/5 pb-2 last:border-0">
+            <span>{{ r.from }} ← {{ r.to }}</span>
+            <span class="font-bold text-primary">{{ r.trips }} رحلة</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش بيانات في الفترة دي.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

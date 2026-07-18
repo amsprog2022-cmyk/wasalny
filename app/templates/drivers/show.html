@@ -1,0 +1,126 @@
+{% extends "layout/base.html" %}
+{% block title %}{{ driver.name }} · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">{{ driver.name }}</h1>
+      <p class="text-text-muted text-sm">
+        📞 <span dir="ltr">{{ driver.wa_id }}</span>
+        {% if driver.car_model %} · 🚗 {{ driver.car_model }} · {{ driver.car_plate }}{% endif %}
+        {% if driver.signup_source == 'public' %} · <span class="text-primary text-xs">سجل بنفسه</span>{% endif %}
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if driver.approval_status == 'pending' %}
+        <span class="pill" style="background: rgba(251,192,45,0.15); color: #FBC02D;">مستني مراجعة</span>
+      {% elif driver.approval_status == 'rejected' %}
+        <span class="pill pill-off">مرفوض</span>
+      {% else %}
+        {% set label = {'active':'شغال','warned':'متنبَّه','suspended':'موقف','banned':'محظور'}.get(driver.discipline_status, driver.discipline_status) %}
+        {% set pill = 'pill-on' if driver.discipline_status == 'active' else 'pill-off' %}
+        <span class="pill {{ pill }}">{{ label }}</span>
+      {% endif %}
+      {% if presence.online %}
+        <span class="pill pill-on">{{ 'متاح' if presence.available else 'مشغول' }}</span>
+      {% else %}
+        <span class="text-text-muted text-xs">مش شغال</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if driver.approval_status == 'pending' and current_user.is_admin %}
+    <div class="card border border-warning/40 bg-warning/5">
+      <h2 class="font-bold mb-2 text-warning">⏳ الكابتن ده مستني مراجعتك</h2>
+      <p class="text-text-muted text-sm mb-4">لو الاسم والعربية سليمين، اقبله وهيقدر يفتح التطبيق فوراً.</p>
+      <div class="flex gap-2">
+        <form method="post" action="{{ url_for('drivers.approve', driver_id=driver.id) }}" class="inline">
+          <button class="btn-primary">✅ اقبل الكابتن</button>
+        </form>
+        <form method="post" action="{{ url_for('drivers.reject', driver_id=driver.id) }}" class="inline">
+          <button class="btn-ghost">❌ ارفض</button>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="grid grid-cols-4 gap-4">
+    <div class="card text-center">
+      <div class="text-3xl font-bold">{{ stats.total }}</div>
+      <div class="text-text-muted text-xs">رحلات خلصت</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold">{{ '%.0f'|format(stats.gross) }}</div>
+      <div class="text-text-muted text-xs">إجمالي بالجنيه</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-primary">{{ '%.0f'|format(stats.commission) }}</div>
+      <div class="text-text-muted text-xs">اللي علينا لوصلني</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-success">{{ '%.0f'|format(stats.net) }}</div>
+      <div class="text-text-muted text-xs">صافي للكابتن</div>
+    </div>
+  </div>
+
+  {% if current_user.is_admin and driver.approval_status == 'approved' %}
+    <div class="card">
+      <h2 class="font-bold mb-3">⚙️ إجراءات الإدارة</h2>
+      <div class="flex flex-wrap gap-2">
+        {% if driver.discipline_status == 'suspended' %}
+          <form method="post" action="{{ url_for('drivers.unsuspend', driver_id=driver.id) }}" class="inline">
+            <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">فك الإيقاف</button>
+          </form>
+        {% else %}
+          <form method="post" action="{{ url_for('drivers.suspend', driver_id=driver.id) }}" class="inline">
+            <input type="hidden" name="hours" value="24" />
+            <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">وقف ٢٤ ساعة</button>
+          </form>
+        {% endif %}
+
+        <form method="post" action="{{ url_for('drivers.force_offline', driver_id=driver.id) }}" class="inline">
+          <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">نزّله من الشغل</button>
+        </form>
+
+        <form method="post" action="{{ url_for('drivers.reset_password', driver_id=driver.id) }}" class="inline">
+          <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">رجّع كلمة السر للافتراضية</button>
+        </form>
+      </div>
+      {% if driver.suspended_until %}
+        <p class="text-text-muted text-xs mt-3">موقف لحد: {{ driver.suspended_until.strftime('%H:%M · %d %b') }}</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="font-bold mb-3">🚗 آخر الرحلات</h2>
+    {% if recent %}
+      <table class="w-full text-sm">
+        <thead class="text-text-muted">
+          <tr>
+            <th class="text-right py-2">#</th>
+            <th class="text-right py-2">الطريق</th>
+            <th class="text-right py-2">السعر</th>
+            <th class="text-right py-2">الحالة</th>
+            <th class="text-right py-2">إمتى</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in recent %}
+            <tr class="border-t border-white/5">
+              <td class="py-2"><a href="{{ url_for('rides.show', ride_id=r.id) }}" class="text-primary hover:underline">#{{ r.id }}</a></td>
+              <td class="py-2">{{ r.from_zone.name_ar if r.from_zone else '—' }} ← {{ r.to_zone.name_ar if r.to_zone else '—' }}</td>
+              <td class="py-2 font-mono">{{ '%.0f'|format(r.price_egp) }} ج.م</td>
+              <td class="py-2">{{ {'completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش','assigned':'اتوزعت','started':'شغالة','broadcasting':'بندور','new':'جديدة'}.get(r.status, r.status) }}</td>
+              <td class="py-2 text-text-muted">{{ r.created_at.strftime('%H:%M · %d %b') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش رحلات لسه.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

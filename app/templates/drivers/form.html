@@ -1,0 +1,71 @@
+{% extends "layout/base.html" %}
+{% block title %}كابتن جديد · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-2xl mx-auto">
+  <h1 class="text-2xl font-bold mb-6">ضيف كابتن جديد</h1>
+  <p class="text-text-muted text-sm mb-6">
+    الكابتن هيدخل بكلمة السر الافتراضية اللي في الإعدادات.
+    لو حابب الكابتن يسجل نفسه، ابعتله لينك التسجيل من صفحة الكباتن.
+  </p>
+
+  <form method="post" class="card space-y-5">
+    <div>
+      <h2 class="text-sm font-bold text-text-muted mb-3">👤 البيانات الشخصية</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs mb-1 text-white/80">الاسم بالكامل</label>
+          <input name="name" class="input" placeholder="أحمد فخري" required />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">رقم الواتساب</label>
+          <input name="wa_id" class="input" placeholder="01029188887" dir="ltr" required />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">الرقم القومي (اختياري)</label>
+          <input name="national_id" class="input" placeholder="١٤ رقم" />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">رقم الرخصة (اختياري)</label>
+          <input name="license_number" class="input" />
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h2 class="text-sm font-bold text-text-muted mb-3">🚗 العربية</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs mb-1 text-white/80">الموديل</label>
+          <input name="car_model" class="input" placeholder="Toyota Corolla" />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">اللوحة</label>
+          <input name="car_plate" class="input" placeholder="ب ن ه ١٢٣٤" />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">اللون</label>
+          <input name="car_color" class="input" placeholder="أبيض" />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">الفئة</label>
+          <select name="category" class="input">
+            <option value="economy">اقتصادي</option>
+            <option value="business">بيزنس</option>
+            <option value="premium">بريميوم</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-xs mb-1 text-white/80">ملاحظات (بس للأدمن)</label>
+      <textarea name="notes" class="input" rows="2"></textarea>
+    </div>
+
+    <div class="flex gap-3 pt-2">
+      <button type="submit" class="btn-primary">أضف الكابتن</button>
+      <a href="{{ url_for('drivers.index') }}" class="btn-ghost">إلغاء</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

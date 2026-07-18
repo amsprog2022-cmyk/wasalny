@@ -1,0 +1,74 @@
+{% extends "layout/base.html" %}
+{% block title %}الرحلات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">الرحلات</h1>
+      <p class="text-text-muted text-sm">كل رحلة عدت على وصلني.</p>
+    </div>
+  </div>
+
+  {% set tab_labels = {'active':'شغالة دلوقتي','new':'جديدة','completed':'خلصت','cancelled':'اتلغت','all':'الكل'} %}
+  <div class="flex gap-2 mb-4">
+    {% for slug, label, _ in tabs %}
+      <a href="{{ url_for('rides.index', tab=slug) }}"
+         class="px-4 py-2 rounded-full text-sm {% if active_tab == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
+        {{ tab_labels.get(slug, label) }} <span class="opacity-70">({{ counts[slug] }})</span>
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">الطريق</th>
+          <th class="text-right px-4 py-3">العميل</th>
+          <th class="text-right px-4 py-3">الكابتن</th>
+          <th class="text-right px-4 py-3">السعر</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th class="text-right px-4 py-3">إمتى</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set status_ar = {'new':'جديدة','broadcasting':'بندور','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'العميل ماحضرش'} %}
+        {% for r in rides %}
+          <tr class="border-t border-white/5 hover:bg-white/[0.02]">
+            <td class="px-4 py-3 text-text-muted">#{{ r.id }}</td>
+            <td class="px-4 py-3">
+              {{ r.from_zone.name_ar if r.from_zone else '—' }}
+              <span class="text-text-muted">←</span>
+              {{ r.to_zone.name_ar if r.to_zone else '—' }}
+            </td>
+            <td class="px-4 py-3">
+              {% if r.customer %}{{ r.customer.name or r.customer.wa_id }}{% else %}—{% endif %}
+            </td>
+            <td class="px-4 py-3">
+              {% if r.driver %}{{ r.driver.name }}{% else %}<span class="text-text-muted">لسه</span>{% endif %}
+            </td>
+            <td class="px-4 py-3 font-mono">{{ '%.0f'|format(r.price_egp) }} ج.م</td>
+            <td class="px-4 py-3">
+              {% set color = {
+                'new': 'text-text-muted', 'broadcasting': 'text-warning',
+                'assigned': 'text-primary', 'started': 'text-success',
+                'completed': 'text-success', 'cancelled': 'text-red-300',
+                'cancelled_no_show': 'text-red-300',
+              }.get(r.status, 'text-text-muted') %}
+              <span class="{{ color }}">{{ status_ar.get(r.status, r.status) }}</span>
+            </td>
+            <td class="px-4 py-3 text-text-muted">{{ r.created_at.strftime('%H:%M · %d %b') }}</td>
+            <td class="px-4 py-3 text-left">
+              <a href="{{ url_for('rides.show', ride_id=r.id) }}" class="text-primary hover:underline">تفاصيل</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8" class="px-4 py-12 text-center text-text-muted">مفيش رحلات هنا.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "layout/base.html" %}
+{% block title %}Inbox · Wassalny{% endblock %}
+{% block content %}
+<div class="h-full flex">
+
+  <!-- Conversation list -->
+  <aside class="w-80 border-r bg-white flex flex-col">
+    <div class="p-3 border-b flex gap-2 text-sm">
+      <a href="{{ url_for('inbox.index', kind='all') }}"
+         class="px-3 py-1 rounded {% if active_kind == 'all' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">All</a>
+      <a href="{{ url_for('inbox.index', kind='customer') }}"
+         class="px-3 py-1 rounded {% if active_kind == 'customer' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">Customers</a>
+      <a href="{{ url_for('inbox.index', kind='driver') }}"
+         class="px-3 py-1 rounded {% if active_kind == 'driver' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">Captains</a>
+    </div>
+
+    <div id="conv-list" class="overflow-y-auto flex-1">
+      {% for conv in conversations %}
+        <div class="conv-item p-3 border-b cursor-pointer hover:bg-slate-50"
+             data-conv-id="{{ conv.id }}"
+             data-kind="{{ conv.kind }}"
+             data-peer-name="{{ conv.peer_name() }}"
+             data-peer-wa="{{ conv.peer_wa_id() }}"
+             data-within-window="{{ 'true' if conv.within_free_window() else 'false' }}">
+          <div class="flex justify-between items-start">
+            <div>
+              <div class="font-semibold text-sm">{{ conv.peer_name() }}</div>
+              <div class="text-xs text-slate-500">{{ conv.peer_wa_id() }}</div>
+            </div>
+            {% if conv.unread_count > 0 %}
+              <span class="unread-badge bg-emerald-500 text-white text-xs rounded-full px-2 py-0.5">{{ conv.unread_count }}</span>
+            {% endif %}
+          </div>
+          <div class="text-xs text-slate-600 truncate mt-1">{{ conv.last_message_preview or '—' }}</div>
+          <div class="text-[10px] text-slate-400 mt-1 flex gap-2">
+            <span class="px-1.5 rounded {% if conv.kind == 'driver' %}bg-amber-100 text-amber-800{% else %}bg-sky-100 text-sky-800{% endif %}">
+              {{ conv.kind }}
+            </span>
+            {% if conv.within_free_window() %}
+              <span class="text-emerald-600">● free window</span>
+            {% else %}
+              <span class="text-slate-400">template only</span>
+            {% endif %}
+          </div>
+        </div>
+      {% else %}
+        <div class="p-6 text-center text-sm text-slate-400">No conversations yet.</div>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <!-- Chat panel -->
+  <section class="flex-1 flex flex-col">
+    <div id="chat-empty" class="flex-1 flex items-center justify-center text-slate-400">
+      Select a conversation to start chatting
+    </div>
+
+    <div id="chat" class="hidden flex-1 flex flex-col">
+      <header class="p-4 border-b flex justify-between items-center bg-white">
+        <div>
+          <div id="chat-peer-name" class="font-semibold"></div>
+          <div id="chat-peer-wa" class="text-xs text-slate-500"></div>
+        </div>
+        <div id="chat-window-status" class="text-xs"></div>
+      </header>
+
+      <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50"></div>
+
+      <div id="chat-composer" class="border-t bg-white p-3">
+        <div id="composer-free" class="flex gap-2">
+          <input id="composer-input" type="text" placeholder="Type a message…"
+                 class="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+          <button id="composer-send"
+                  class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 rounded">Send</button>
+        </div>
+        <div id="composer-locked" class="hidden text-sm text-slate-600">
+          🔒 24-hour window closed — pick an approved template:
+          <select id="template-select" class="border rounded px-2 py-1 ml-2">
+            <option value="">— select template —</option>
+            {% for t in templates %}
+              <option value="{{ t.name }}" data-lang="{{ t.language }}" data-vars="{{ t.variable_count }}">{{ t.name }} ({{ t.category }})</option>
+            {% endfor %}
+          </select>
+          <button id="template-send" class="bg-slate-800 text-white px-3 py-1 rounded ml-2 text-sm">Send template</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='js/inbox.js') }}"></script>
+{% endblock %}

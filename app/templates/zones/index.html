@@ -1,0 +1,62 @@
+{% extends "layout/base.html" %}
+{% block title %}المناطق · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-4xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">المناطق</h1>
+      <p class="text-text-muted text-sm">مناطق بنها اللي بتشتغل عليها.</p>
+    </div>
+    {% if current_user.is_admin %}
+      <a href="{{ url_for('zones.new') }}" class="btn-primary">+ ضيف منطقة</a>
+    {% endif %}
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">اسم عربي</th>
+          <th class="text-right px-4 py-3">اسم إنجليزي</th>
+          <th class="text-right px-4 py-3">Slug</th>
+          <th class="text-right px-4 py-3">كباتن متاحين دلوقتي</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for z in zones %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3">{{ z.name_ar }}</td>
+            <td class="px-4 py-3">{{ z.name_en }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ z.slug }}</td>
+            <td class="px-4 py-3">
+              <span class="font-bold {{ 'text-success' if counts[z.id] else 'text-text-muted' }}">
+                {{ counts[z.id] }}
+              </span>
+            </td>
+            <td class="px-4 py-3">
+              <span class="pill {{ 'pill-on' if z.is_active else 'pill-off' }}">
+                {{ 'شغالة' if z.is_active else 'مقفولة' }}
+              </span>
+            </td>
+            <td class="px-4 py-3 text-left">
+              {% if current_user.is_admin %}
+                <form method="post" action="{{ url_for('zones.toggle', zone_id=z.id) }}" class="inline">
+                  <button class="text-text-muted hover:text-primary">
+                    {{ 'أقفل' if z.is_active else 'افتح' }}
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="px-4 py-12 text-center text-text-muted">
+            مفيش مناطق لسه.
+          </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

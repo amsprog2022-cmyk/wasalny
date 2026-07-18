@@ -1,0 +1,45 @@
+{% extends "layout/base.html" %}
+{% block title %}السجلات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">سجل العمليات</h1>
+      <p class="text-text-muted text-sm">كل حاجة عملها الأدمن. مفيش تعديل أو مسح.</p>
+    </div>
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">إمتى</th>
+          <th class="text-right px-4 py-3">مين</th>
+          <th class="text-right px-4 py-3">الإجراء</th>
+          <th class="text-right px-4 py-3">على مين</th>
+          <th class="text-right px-4 py-3">IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3 text-text-muted">{{ r.created_at.strftime('%H:%M:%S · %d %b') }}</td>
+            <td class="px-4 py-3">
+              {% set actor = actors.get(r.actor_user_id) %}
+              {{ actor.name if actor else '—' }}
+              <span class="text-text-muted text-xs">({{ actor.role if actor else 'النظام' }})</span>
+            </td>
+            <td class="px-4 py-3 font-mono text-primary" dir="ltr">{{ r.action }}</td>
+            <td class="px-4 py-3 text-text-muted">
+              {{ r.target_kind or '' }}{% if r.target_id %} #{{ r.target_id }}{% endif %}
+            </td>
+            <td class="px-4 py-3 text-text-muted font-mono text-xs" dir="ltr">{{ r.ip_address or '' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="px-4 py-12 text-center text-text-muted">مفيش عمليات مسجلة لسه.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

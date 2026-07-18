@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تسجيل كابتن جديد · وصلني بنها</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#111125', 'bg-deep': '#050819', surface: '#1E1E32',
+            'surface-raised': '#292A3C', primary: '#F57C00',
+            'primary-hover': '#FB8C1E', success: '#22C55E',
+            warning: '#FBC02D', 'text-muted': '#9BA3A8',
+          },
+          fontFamily: { arabic: ['"Cairo"', '"Tajawal"', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <style>
+    body { background: #111125; }
+    .input {
+      background: #1E1E32; border: 1px solid rgba(255,255,255,0.08);
+      color: #fff; border-radius: 12px; padding: 12px 14px; width: 100%;
+      font-family: 'Cairo', sans-serif;
+    }
+    .input:focus { outline: none; border-color: #F57C00; }
+    .btn-primary {
+      background: #F57C00; color: #fff; border-radius: 999px;
+      padding: 14px 28px; font-weight: 700; width: 100%;
+      font-family: 'Cairo', sans-serif; font-size: 16px;
+    }
+    .btn-primary:hover { background: #FB8C1E; }
+    .card { background: #1E1E32; border-radius: 16px; padding: 32px; }
+  </style>
+</head>
+<body class="text-white font-arabic min-h-screen flex items-center justify-center py-8 px-4" style="font-family: 'Cairo', sans-serif;">
+  <div class="max-w-md w-full">
+
+    <div class="text-center mb-8">
+      <div class="text-5xl mb-2">🚗</div>
+      <h1 class="text-3xl font-black text-primary mb-1">وصلني بنها</h1>
+      <p class="text-text-muted text-sm">تسجيل كابتن جديد</p>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <div class="mb-4 p-3 rounded-xl text-sm text-center {% if cat == 'error' %}bg-red-900/40 text-red-200 border border-red-500/30{% else %}bg-green-900/40 text-green-200{% endif %}">
+          {{ msg }}
+        </div>
+      {% endfor %}
+    {% endwith %}
+
+    <form method="post" class="card space-y-4">
+
+      <div>
+        <label class="block text-sm mb-2 text-white/90 font-bold">👤 الاسم بالكامل</label>
+        <input name="name" class="input" placeholder="مثال: أحمد فخري إبراهيم"
+               value="{{ form.get('name', '') }}" required />
+      </div>
+
+      <div>
+        <label class="block text-sm mb-2 text-white/90 font-bold">📞 رقم الهاتف (واتساب)</label>
+        <input name="wa_id" class="input" placeholder="01029188887" inputmode="numeric" dir="ltr"
+               value="{{ form.get('wa_id', '') }}" required />
+        <p class="text-xs text-text-muted mt-1">هيتم التواصل معاك على هذا الرقم.</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm mb-2 text-white/90 font-bold">🚗 نوع العربية</label>
+          <input name="car_model" class="input" placeholder="Toyota Corolla"
+                 value="{{ form.get('car_model', '') }}" required />
+        </div>
+        <div>
+          <label class="block text-sm mb-2 text-white/90 font-bold">🎨 اللون</label>
+          <input name="car_color" class="input" placeholder="أبيض"
+                 value="{{ form.get('car_color', '') }}" />
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm mb-2 text-white/90 font-bold">🔢 رقم اللوحة</label>
+        <input name="car_plate" class="input" placeholder="ب ن ه ١٢٣٤"
+               value="{{ form.get('car_plate', '') }}" required />
+      </div>
+
+      <div class="bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-text-muted mt-4">
+        <p class="mb-1">📋 <span class="text-white/80">مهم تعرف:</span></p>
+        <p>هيتم مراجعة طلبك من الإدارة خلال ٢٤ ساعة. لما يتم قبولك، هتقدر تفتح تطبيق الكابتن وتشتغل.</p>
+      </div>
+
+      <button type="submit" class="btn-primary mt-4">إرسال طلب التسجيل</button>
+
+      <p class="text-center text-text-muted text-xs pt-2">
+        بإرسال الطلب أنت توافق على شروط الخدمة الخاصة بوصلني بنها.
+      </p>
+    </form>
+
+    <p class="text-center text-text-muted text-xs mt-6">
+      عندك حساب بالفعل؟ حمل تطبيق الكابتن من متجر التطبيقات.
+    </p>
+  </div>
+</body>
+</html>

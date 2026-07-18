@@ -1,0 +1,33 @@
+{% extends "layout/base.html" %}
+{% block title %}Add user · Wassalny{% endblock %}
+{% block content %}
+<div class="p-6 max-w-lg mx-auto">
+  <h1 class="text-2xl font-bold mb-6">Add Team Member</h1>
+  <form method="post" class="bg-white rounded-lg shadow p-6 space-y-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Name</label>
+      <input name="name" required class="w-full border rounded px-3 py-2" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Email</label>
+      <input name="email" type="email" required class="w-full border rounded px-3 py-2" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Temporary password</label>
+      <input name="password" type="text" required class="w-full border rounded px-3 py-2 font-mono" />
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Role</label>
+      <select name="role" class="w-full border rounded px-3 py-2">
+        <option value="agent">Agent — chat with customers</option>
+        <option value="dispatcher">Dispatcher — assign rides + agent</option>
+        <option value="admin">Admin — full access</option>
+      </select>
+    </div>
+    <div class="flex gap-2 justify-end">
+      <a href="{{ url_for('users.index') }}" class="px-4 py-2 text-slate-600">Cancel</a>
+      <button class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded">Create user</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

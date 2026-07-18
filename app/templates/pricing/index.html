@@ -1,0 +1,51 @@
+{% extends "layout/base.html" %}
+{% block title %}الأسعار · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">جدول الأسعار</h1>
+      <p class="text-text-muted text-sm">السعر ثابت من منطقة لمنطقة. الصفوف = من فين، الأعمدة = لفين.</p>
+    </div>
+    {% if current_user.is_admin %}
+      <button form="pricing-form" type="submit" class="btn-primary">احفظ التغييرات</button>
+    {% endif %}
+  </div>
+
+  <form id="pricing-form" method="post" class="card overflow-auto">
+    {% if zones|length == 0 %}
+      <p class="text-text-muted">ضيف مناطق الأول.</p>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr>
+            <th class="p-2 text-text-muted text-right">من ↓ / لـ ←</th>
+            {% for t in zones %}
+              <th class="p-2 text-text-muted font-normal">{{ t.name_ar }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in zones %}
+            <tr>
+              <th class="p-2 text-text-muted text-right font-normal">{{ f.name_ar }}</th>
+              {% for t in zones %}
+                {% set price = prices.get((f.id, t.id)) %}
+                <td class="p-1 price-cell text-center">
+                  <input
+                    type="number" step="0.5" min="0"
+                    name="p_{{ f.id }}_{{ t.id }}"
+                    value="{{ '%.2f'|format(price) if price is not none else '' }}"
+                    {% if not current_user.is_admin %}readonly{% endif %}
+                  />
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="text-xs text-text-muted mt-4">القطر (نفس المنطقة) = رحلات قصيرة داخل الحي.</p>
+    {% endif %}
+  </form>
+</div>
+{% endblock %}

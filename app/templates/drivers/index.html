@@ -1,0 +1,102 @@
+{% extends "layout/base.html" %}
+{% block title %}الكباتن · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">الكباتن</h1>
+      <p class="text-text-muted text-sm">كل الكباتن اللي شغالين معانا.</p>
+    </div>
+    {% if current_user.is_admin %}
+      <div class="flex gap-2">
+        <a href="{{ url_for('captain_signup.register') }}" target="_blank" class="btn-ghost">🔗 لينك التسجيل</a>
+        <a href="{{ url_for('drivers.create') }}" class="btn-primary">+ ضيف كابتن</a>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if pending_count %}
+    <div class="card border border-warning/40 bg-warning/5 mb-4 flex items-center justify-between">
+      <p><span class="text-warning font-bold text-lg">{{ pending_count }}</span> <span class="text-white/80">كابتن مستنيين مراجعتك</span></p>
+      <a href="{{ url_for('drivers.index', filter='pending') }}" class="btn-primary" style="padding: 6px 14px; font-size: 12px;">راجعهم دلوقتي</a>
+    </div>
+  {% endif %}
+
+  <form class="flex gap-2 mb-4" method="get">
+    <input name="q" value="{{ q }}" placeholder="ابحث بالاسم أو رقم الهاتف…" class="input flex-1" />
+    <input type="hidden" name="filter" value="{{ active_filter }}" />
+    <button class="btn-ghost">ابحث</button>
+  </form>
+
+  <div class="flex gap-2 mb-4 flex-wrap">
+    {% for slug, label in [('all','الكل'), ('pending','مستنيين مراجعة'), ('warned','متنبَّه عليهم'), ('suspended','موقفين'), ('top','أعلى تقييم')] %}
+      <a href="{{ url_for('drivers.index', filter=slug, q=q) }}"
+         class="px-4 py-2 rounded-full text-sm {% if active_filter == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
+        {{ label }}
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">الاسم</th>
+          <th class="text-right px-4 py-3">التليفون</th>
+          <th class="text-right px-4 py-3">العربية</th>
+          <th class="text-right px-4 py-3">التقييم</th>
+          <th class="text-right px-4 py-3">الرحلات</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th class="text-right px-4 py-3">دلوقتي</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in drivers %}
+          {% set p = presence[d.id] %}
+          <tr class="border-t border-white/5 hover:bg-white/[0.02]">
+            <td class="px-4 py-3 text-text-muted">#{{ d.id }}</td>
+            <td class="px-4 py-3">
+              {{ d.name }}
+              {% if d.approval_status == 'pending' %}
+                <span class="pill" style="background: rgba(251,192,45,0.15); color: #FBC02D; margin-right: 6px;">جديد</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 text-text-muted font-mono" dir="ltr">{{ d.wa_id }}</td>
+            <td class="px-4 py-3">
+              {{ d.car_model or '—' }}
+              {% if d.car_plate %}<span class="text-text-muted"> · {{ d.car_plate }}</span>{% endif %}
+            </td>
+            <td class="px-4 py-3">⭐ {{ '%.1f'|format(d.rating|float) if d.rating is not none else '—' }}</td>
+            <td class="px-4 py-3">{{ d.total_trips }}</td>
+            <td class="px-4 py-3">
+              {% if d.approval_status == 'pending' %}
+                <span class="pill" style="background: rgba(251,192,45,0.15); color: #FBC02D;">مستني مراجعة</span>
+              {% elif d.approval_status == 'rejected' %}
+                <span class="pill pill-off">مرفوض</span>
+              {% else %}
+                {% set label = {'active':'شغال','warned':'متنبَّه','suspended':'موقف','banned':'محظور'}.get(d.discipline_status, d.discipline_status) %}
+                {% set pill = 'pill-on' if d.discipline_status == 'active' else 'pill-off' %}
+                <span class="pill {{ pill }}">{{ label }}</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">
+              {% if p.online %}
+                <span class="pill pill-on">{{ 'متاح' if p.available else 'مشغول' }}</span>
+              {% else %}
+                <span class="text-text-muted text-xs">مش شغال</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 text-left">
+              <a href="{{ url_for('drivers.show', driver_id=d.id) }}" class="text-primary hover:underline">تفاصيل</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="9" class="px-4 py-12 text-center text-text-muted">مفيش كباتن في الفلتر ده.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

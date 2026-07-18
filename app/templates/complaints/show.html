@@ -1,0 +1,86 @@
+{% extends "layout/base.html" %}
+{% block title %}شكوى #{{ complaint.id }} · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-4xl mx-auto space-y-6">
+
+  {% set cat_ar = {'missing_item':'حاجة اتنسيت','overcharge':'حساب زايد','rude':'الكابتن مش محترم','no_show':'الكابتن ماجاش','wrong_route':'راح طريق غلط','safety':'الأمان','other':'غير كده'} %}
+  {% set kind_ar = {'customer':'العميل','driver':'الكابتن','admin':'الأدمن'} %}
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">شكوى #{{ complaint.id }}</h1>
+      <p class="text-text-muted text-sm">
+        {{ cat_ar.get(complaint.category, complaint.category) }} · من {{ kind_ar.get(complaint.filed_by_kind, complaint.filed_by_kind) }}: {{ filer_name }}
+        {% if complaint.ride_id %}
+          · <a href="{{ url_for('rides.show', ride_id=complaint.ride_id) }}" class="text-primary hover:underline">رحلة #{{ complaint.ride_id }}</a>
+        {% endif %}
+      </p>
+    </div>
+    <span class="pill {{ 'pill-on' if complaint.status in ('resolved','closed') else 'pill-off' }}">
+      {{ {'open':'مفتوحة','in_progress':'شغالين','waiting_user':'مستنيين رد','resolved':'اتحلت','closed':'اتقفلت'}.get(complaint.status, complaint.status) }}
+    </span>
+  </div>
+
+  <div class="card">
+    <p class="text-text-muted text-xs">الموضوع</p>
+    <p class="text-lg font-bold mb-3">{{ complaint.subject }}</p>
+    {% if complaint.description %}
+      <p class="text-white/80 whitespace-pre-line">{{ complaint.description }}</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">💬 نقاش الفريق</h2>
+    {% if comments %}
+      <ol class="space-y-3">
+        {% for c in comments %}
+          <li class="border-b border-white/5 pb-3 last:border-0">
+            <p class="text-xs text-text-muted mb-1">
+              {{ c.author.name if c.author else 'النظام' }} · {{ c.created_at.strftime('%H:%M · %d %b') }}
+            </p>
+            <p class="text-white/80 whitespace-pre-line">{{ c.body }}</p>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش تعليقات.</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('complaints.comment', complaint_id=complaint.id) }}" class="mt-4 space-y-2">
+      <textarea name="body" class="input" rows="2" placeholder="اكتب تعليق…" required></textarea>
+      <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">أضف</button>
+    </form>
+  </div>
+
+  {% if complaint.status not in ('resolved', 'closed') and current_user.is_admin %}
+    <div class="card">
+      <h2 class="font-bold mb-3">🔧 حل الشكوى</h2>
+      <form method="post" action="{{ url_for('complaints.resolve', complaint_id=complaint.id) }}" class="space-y-3">
+        <div>
+          <label class="block text-xs mb-1 text-white/80">الإجراء</label>
+          <select name="action" class="input" onchange="document.getElementById('amt-wrap').style.display = (this.value == 'refund' || this.value == 'credit') ? 'block' : 'none'; document.getElementById('hours-wrap').style.display = (this.value == 'suspend') ? 'block' : 'none';">
+            <option value="none">مفيش (اقفل بس)</option>
+            <option value="refund">استرداد فلوس للعميل</option>
+            <option value="credit">رصيد للعميل (تعويض)</option>
+            <option value="warn">تنبيه للكابتن</option>
+            <option value="suspend">وقف الكابتن</option>
+            <option value="ban">حظر الكابتن</option>
+          </select>
+        </div>
+        <div id="amt-wrap" style="display:none">
+          <label class="block text-xs mb-1 text-white/80">المبلغ (ج.م)</label>
+          <input name="amount" type="number" step="0.5" class="input" placeholder="٢٥" />
+        </div>
+        <div id="hours-wrap" style="display:none">
+          <label class="block text-xs mb-1 text-white/80">عدد ساعات الإيقاف</label>
+          <input name="hours" type="number" class="input" value="24" />
+        </div>
+        <div>
+          <label class="block text-xs mb-1 text-white/80">اكتب اللي عملته</label>
+          <textarea name="resolution" class="input" rows="2" required placeholder="مثال: تم استرداد ١٥ ج.م للعميل."></textarea>
+        </div>
+        <button class="btn-primary">حل الشكوى</button>
+      </form>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

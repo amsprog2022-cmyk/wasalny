@@ -1,0 +1,47 @@
+{% extends "layout/base.html" %}
+{% block title %}Team · Wassalny{% endblock %}
+{% block content %}
+<div class="p-6 h-full overflow-y-auto">
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="text-2xl font-bold">Team</h1>
+    <a href="{{ url_for('users.create') }}"
+       class="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded">+ Add User</a>
+  </div>
+
+  <div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-left text-slate-600">
+        <tr>
+          <th class="p-3">Name</th>
+          <th class="p-3">Email</th>
+          <th class="p-3">Role</th>
+          <th class="p-3">Status</th>
+          <th class="p-3"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr class="border-t">
+          <td class="p-3 font-medium">{{ u.name }}</td>
+          <td class="p-3">{{ u.email }}</td>
+          <td class="p-3">
+            <span class="px-2 py-0.5 rounded text-xs
+              {% if u.role == 'admin' %}bg-rose-100 text-rose-800
+              {% elif u.role == 'dispatcher' %}bg-sky-100 text-sky-800
+              {% else %}bg-slate-100 text-slate-600{% endif %}">{{ u.role }}</span>
+          </td>
+          <td class="p-3">{{ 'active' if u.is_active_user else 'disabled' }}</td>
+          <td class="p-3 text-right">
+            <form method="post" action="{{ url_for('users.toggle_active', user_id=u.id) }}" class="inline">
+              <button class="text-slate-500 hover:text-slate-800 text-sm">
+                {{ 'Disable' if u.is_active_user else 'Enable' }}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

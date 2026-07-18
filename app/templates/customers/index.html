@@ -1,0 +1,58 @@
+{% extends "layout/base.html" %}
+{% block title %}العملاء · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">العملاء</h1>
+      <p class="text-text-muted text-sm">كل حد حجز رحلة معانا.</p>
+    </div>
+  </div>
+
+  <form class="flex gap-2 mb-4" method="get">
+    <input name="q" value="{{ q }}" placeholder="ابحث بالاسم أو رقم الهاتف…" class="input flex-1" />
+    <input type="hidden" name="filter" value="{{ active_filter }}" />
+    <button class="btn-ghost">ابحث</button>
+  </form>
+
+  <div class="flex gap-2 mb-4">
+    {% for slug, label in [('all','الكل'), ('active','نشيطين (٣٠ يوم)'), ('with_pending','عليهم غرامات')] %}
+      <a href="{{ url_for('customers.index', filter=slug, q=q) }}"
+         class="px-4 py-2 rounded-full text-sm {% if active_filter == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
+        {{ label }}
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">الاسم</th>
+          <th class="text-right px-4 py-3">التليفون</th>
+          <th class="text-right px-4 py-3">الرحلات</th>
+          <th class="text-right px-4 py-3">مسجل من</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in customers %}
+          <tr class="border-t border-white/5 hover:bg-white/[0.02]">
+            <td class="px-4 py-3 text-text-muted">#{{ c.id }}</td>
+            <td class="px-4 py-3">{{ c.name or '—' }}</td>
+            <td class="px-4 py-3 text-text-muted font-mono" dir="ltr">{{ c.wa_id }}</td>
+            <td class="px-4 py-3">{{ ride_counts.get(c.id, 0) }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ c.created_at.strftime('%d %b') if c.created_at else '—' }}</td>
+            <td class="px-4 py-3 text-left">
+              <a href="{{ url_for('customers.show', customer_id=c.id) }}" class="text-primary hover:underline">تفاصيل</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="px-4 py-12 text-center text-text-muted">مفيش عملاء بهذا الفلتر.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

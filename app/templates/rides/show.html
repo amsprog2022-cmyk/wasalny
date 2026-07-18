@@ -1,0 +1,94 @@
+{% extends "layout/base.html" %}
+{% block title %}رحلة #{{ ride.id }} · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  {% set status_ar = {'new':'جديدة','broadcasting':'بندور','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'العميل ماحضرش'} %}
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">رحلة #{{ ride.id }}</h1>
+      <p class="text-text-muted text-sm">
+        {{ ride.from_zone.name_ar if ride.from_zone else '—' }} ← {{ ride.to_zone.name_ar if ride.to_zone else '—' }}
+        · <span class="text-primary">{{ status_ar.get(ride.status, ride.status) }}</span>
+      </p>
+    </div>
+    {% if ride.status not in ('completed', 'cancelled', 'cancelled_no_show') and current_user.is_admin %}
+      <form method="post" action="{{ url_for('rides.admin_cancel', ride_id=ride.id) }}" class="flex gap-2">
+        <input name="reason" class="input" placeholder="سبب الإلغاء" required style="width: 240px;" />
+        <button class="btn-ghost">ألغِ الرحلة</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-3 gap-4">
+    <div class="card">
+      <p class="text-text-muted text-xs">السعر</p>
+      <p class="text-2xl font-bold">{{ '%.2f'|format(ride.price_egp) }} ج.م</p>
+      <p class="text-text-muted text-xs">نصيب وصلني: {{ '%.2f'|format(ride.commission_egp) }} ج.م</p>
+      {% if ride.no_show_fee_egp and ride.no_show_fee_egp > 0 %}
+        <p class="text-warning text-xs">+ {{ '%.2f'|format(ride.no_show_fee_egp) }} ج.م غرامة ماحضرش</p>
+      {% endif %}
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">العميل</p>
+      <p class="text-lg font-bold">{{ ride.customer.name or '—' if ride.customer else '—' }}</p>
+      <p class="text-text-muted text-xs" dir="ltr">{{ ride.customer.wa_id if ride.customer else '' }}</p>
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">الكابتن</p>
+      <p class="text-lg font-bold">{{ ride.driver.name if ride.driver else 'لسه' }}</p>
+      <p class="text-text-muted text-xs">{{ ride.driver.car_plate if ride.driver else '' }}</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">🕐 الترتيب الزمني</h2>
+    {% if events %}
+      <ol class="space-y-2">
+        {% for e in events %}
+          <li class="flex items-center gap-3 text-sm">
+            <span class="text-text-muted w-40">{{ e.created_at.strftime('%H:%M:%S') }}</span>
+            <span class="text-primary font-mono w-40">{{ e.event }}</span>
+            <span class="text-text-muted">من {{ e.actor }}</span>
+            {% if e.payload_json and e.payload_json != '{}' %}
+              <span class="text-text-muted font-mono text-xs">{{ e.payload_json }}</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش أحداث لسه.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">📡 محاولات إرسال الرحلة</h2>
+    {% if broadcasts %}
+      <table class="w-full text-sm">
+        <thead class="text-text-muted">
+          <tr>
+            <th class="text-right py-2">المنطقة</th>
+            <th class="text-right py-2">اتبعتت لكام كابتن</th>
+            <th class="text-right py-2">النتيجة</th>
+            <th class="text-right py-2">اللي قبل</th>
+            <th class="text-right py-2">إمتى</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set outcome_ar = {'accepted':'اتقبلت','timeout':'خلص الوقت','expanded':'وسّعنا المنطقة','no_drivers':'مفيش كباتن'} %}
+          {% for b in broadcasts %}
+            <tr class="border-t border-white/5">
+              <td class="py-2">{{ b.zone_id }}</td>
+              <td class="py-2 font-mono text-text-muted">{{ (parse_json(b.driver_ids_json) or []) | length }} كابتن</td>
+              <td class="py-2">{{ outcome_ar.get(b.outcome, b.outcome) or '…' }}</td>
+              <td class="py-2">{{ b.accepted_by_driver_id or '—' }}</td>
+              <td class="py-2 text-text-muted">{{ b.started_at.strftime('%H:%M:%S') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش محاولات لسه.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

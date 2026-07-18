@@ -1,0 +1,85 @@
+{% extends "layout/base.html" %}
+{% block title %}الحملات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">📣 الحملات التسويقية</h1>
+      <p class="text-text-muted text-sm">ابعت رسايل واتساب لعملاء مختارين. متبعتش كتير - عشان الحساب اتقفل قبل كده.</p>
+    </div>
+    <a href="{{ url_for('marketing.announcements') }}" class="btn-ghost">إعلانات داخل التطبيق ←</a>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">حملة جديدة</h2>
+    <form method="post" action="{{ url_for('marketing.new_broadcast') }}" class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs mb-1 text-white/80">مين هيوصله</label>
+        <select name="audience" class="input">
+          <option value="all_customers">كل العملاء ({{ audience_previews.all_customers }})</option>
+          <option value="vip">مميزين (٢٠+ رحلة) ({{ audience_previews.vip }})</option>
+          <option value="dormant">مش شغالين (٣٠+ يوم) ({{ audience_previews.dormant }})</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">اسم القالب المعتمد من ميتا (اختياري)</label>
+        <input name="template_name" class="input" placeholder="promo_ramadan_2026" dir="ltr" />
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">الرسالة</label>
+        <textarea name="message_ar" class="input" rows="3" required
+          placeholder="عرض خاص لعملائنا: خصم ١٥٪ على أول رحلة الأسبوع ده! 🎉"></textarea>
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">جهز الحملة</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+      <h2 class="font-bold">حملات سابقة</h2>
+    </div>
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">إمتى</th>
+          <th class="text-right px-4 py-3">مين</th>
+          <th class="text-right px-4 py-3">الرسالة</th>
+          <th class="text-right px-4 py-3">وصلت</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in broadcasts %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3 text-text-muted">#{{ b.id }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ b.created_at.strftime('%H:%M · %d %b') }}</td>
+            <td class="px-4 py-3">{{ b.audience_filter_json }}</td>
+            <td class="px-4 py-3" style="max-width: 260px;">
+              <span class="text-white/80">{{ (b.message_ar or '')[:120] }}</span>
+            </td>
+            <td class="px-4 py-3">
+              {% if b.sent_at %}
+                <span class="text-success">{{ b.delivered_count }} / {{ b.recipient_count }}</span>
+              {% else %}
+                <span class="text-warning">مسودة ({{ b.recipient_count }})</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 text-left">
+              {% if not b.sent_at and current_user.is_admin %}
+                <form method="post" action="{{ url_for('marketing.send', broadcast_id=b.id) }}" class="inline">
+                  <button class="btn-primary" style="padding: 4px 10px; font-size: 12px;">ابعت دلوقتي</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="px-4 py-8 text-center text-text-muted">مفيش حملات لسه.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

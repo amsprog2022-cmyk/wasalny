@@ -1,0 +1,114 @@
+{% extends "layout/base.html" %}
+{% block title %}الرئيسية · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto space-y-6">
+
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">لوحة التحكم</h1>
+      <p class="text-text-muted text-sm">كل حاجة بتحصل على المنصة دلوقتي.</p>
+    </div>
+    <div class="flex gap-2">
+      <a href="{{ url_for('rides.index') }}" class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">الرحلات ←</a>
+      <a href="{{ url_for('drivers.index') }}" class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">الكباتن ←</a>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-4 gap-4">
+    <div class="card text-center">
+      <div class="text-4xl font-bold text-primary">{{ counters.captains_online }}</div>
+      <div class="text-text-muted text-xs mt-1">🟢 كباتن شغالين دلوقتي</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-4xl font-bold">{{ counters.active_rides }}</div>
+      <div class="text-text-muted text-xs mt-1">🚗 رحلات دلوقتي</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-4xl font-bold {{ 'text-warning' if counters.pending_broadcasts else '' }}">
+        {{ counters.pending_broadcasts }}
+      </div>
+      <div class="text-text-muted text-xs mt-1">⏳ مستنيين كابتن</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-4xl font-bold {{ 'text-red-300' if counters.open_alerts else '' }}">
+        {{ counters.open_alerts }}
+      </div>
+      <div class="text-text-muted text-xs mt-1">
+        {% if counters.ai_handoffs %}
+          🚨 <a class="hover:text-primary" href="{{ url_for('alerts.index') }}">{{ counters.ai_handoffs }} محتاجين تدخل</a>
+        {% else %}
+          ✅ كله تمام
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-3 gap-4">
+    <div class="card">
+      <p class="text-text-muted text-xs">رحلات النهارده</p>
+      <p class="text-3xl font-bold">{{ counters.trips_today }}</p>
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">إجمالي النهارده</p>
+      <p class="text-3xl font-bold">{{ '%.0f'|format(counters.gross_today) }} <span class="text-lg text-text-muted">ج.م</span></p>
+    </div>
+    <div class="card">
+      <p class="text-text-muted text-xs">نصيب وصلني (١٥٪)</p>
+      <p class="text-3xl font-bold text-primary">{{ '%.0f'|format(counters.commission_today) }} <span class="text-lg text-text-muted">ج.م</span></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-bold">إيرادات آخر ٧ أيام</h2>
+      <span class="text-text-muted text-xs">إجمالي بالجنيه لكل يوم</span>
+    </div>
+    {% set max_gross = revenue|map(attribute='gross')|max %}
+    <div class="flex items-end gap-2 h-32">
+      {% for d in revenue %}
+        {% set pct = (d.gross / max_gross * 100) if max_gross else 0 %}
+        <div class="flex-1 flex flex-col items-center gap-2">
+          <div class="text-xs text-text-muted">{{ '%.0f'|format(d.gross) }}</div>
+          <div class="w-full rounded-t bg-primary/80" style="height: {{ pct }}%; min-height: 4px;"></div>
+          <div class="text-xs text-text-muted">{{ d.day }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">📢 آخر النشاطات</h2>
+    {% if activity %}
+      <ul class="space-y-2">
+        {% for a in activity %}
+          <li class="flex items-center gap-3 text-sm border-b border-white/5 pb-2 last:border-0">
+            <span class="text-text-muted w-16 text-xs">{{ a.when.strftime('%H:%M') }}</span>
+            {% set icon = {
+              'created': '📝', 'broadcast_started': '📡', 'assigned': '🤝',
+              'started': '🚀', 'completed': '✅', 'cancelled': '❌',
+              'cancelled_no_show': '👻', 'no_show': '👻',
+            }.get(a.event, '•') %}
+            {% set label_ar = {
+              'created': 'اتعملت', 'broadcast_started': 'ندور على كابتن',
+              'assigned': 'اتوزعت', 'started': 'ابتدت',
+              'completed': 'خلصت', 'cancelled': 'اتلغت',
+              'cancelled_no_show': 'العميل ماحضرش',
+            }.get(a.event, a.event) %}
+            <span class="w-6">{{ icon }}</span>
+            <span class="text-white/80">
+              <a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">#{{ a.ride_id }}</a>
+              {{ label_ar }}
+            </span>
+            <span class="text-text-muted">{{ a.from_zone }} ← {{ a.to_zone }}</span>
+            {% if a.driver_name %}
+              <span class="text-text-muted mr-auto">· {{ a.driver_name }}</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش نشاط لسه.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

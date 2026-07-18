@@ -1,0 +1,87 @@
+{% extends "layout/base.html" %}
+{% block title %}التنبيهات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold">التنبيهات</h1>
+    <p class="text-text-muted text-sm">حاجات محتاجة تدخل من الفريق.</p>
+  </div>
+
+  <section>
+    <h2 class="font-bold mb-3">🤖 محتاجين تدخل (رسايل الذكي مافهمهاش) <span class="text-text-muted text-sm">({{ handoffs|length }})</span></h2>
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">العميل</th>
+            <th class="text-right px-4 py-3">الرسالة</th>
+            <th class="text-right px-4 py-3">السبب</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in handoffs %}
+            {% set p = parse_json(a.payload_json or '{}') %}
+            <tr class="border-t border-white/5">
+              <td class="px-4 py-3 text-text-muted">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3">
+                {% set c = customers.get(a.customer_id) %}
+                {% if c %}{{ c.name or c.wa_id }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3" style="max-width: 320px;">
+                <span class="text-white/80">{{ p.get('message', '—') }}</span>
+              </td>
+              <td class="px-4 py-3 text-text-muted">{{ p.get('reason', '—') }}</td>
+              <td class="px-4 py-3 text-left whitespace-nowrap">
+                <form method="post" action="{{ url_for('alerts.take_over', alert_id=a.id) }}" class="inline">
+                  <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">استلم</button>
+                </form>
+                <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
+                  <button class="text-text-muted hover:text-primary text-xs px-2">تجاهل</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="px-4 py-8 text-center text-text-muted">مفيش حاجة محتاجة تدخل 🎉</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="font-bold mb-3">🚗 رحلات مالقيتش لها كابتن <span class="text-text-muted text-sm">({{ no_driver|length }})</span></h2>
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">الرحلة</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in no_driver %}
+            <tr class="border-t border-white/5">
+              <td class="px-4 py-3 text-text-muted">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3">
+                {% if a.ride_id %}
+                  <a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">رحلة #{{ a.ride_id }}</a>
+                {% else %} — {% endif %}
+              </td>
+              <td class="px-4 py-3 text-left">
+                <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
+                  <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">تم</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="3" class="px-4 py-8 text-center text-text-muted">الدنيا هادية.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

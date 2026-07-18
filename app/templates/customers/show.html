@@ -1,0 +1,108 @@
+{% extends "layout/base.html" %}
+{% block title %}{{ customer.name or customer.wa_id }} · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">{{ customer.name or '(بدون اسم)' }}</h1>
+      <p class="text-text-muted text-sm">📞 <span dir="ltr">{{ customer.wa_id }}</span></p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-3 gap-4">
+    <div class="card text-center">
+      <div class="text-3xl font-bold">{{ stats.total }}</div>
+      <div class="text-text-muted text-xs">رحلات خلصت</div>
+    </div>
+    <div class="card text-center">
+      <div class="text-3xl font-bold text-primary">{{ '%.0f'|format(stats.spent) }}</div>
+      <div class="text-text-muted text-xs">إجمالي دفع بالجنيه</div>
+    </div>
+    <div class="card text-center">
+      {% set open_pending = pending|selectattr('applied_to_ride_id','none')|selectattr('waived_at','none')|list %}
+      <div class="text-3xl font-bold {{ 'text-warning' if open_pending else '' }}">
+        {{ open_pending|length }}
+      </div>
+      <div class="text-text-muted text-xs">غرامات لسه ماتحسبتش</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">💰 الغرامات</h2>
+    {% if pending %}
+      <table class="w-full text-sm">
+        <thead class="text-text-muted">
+          <tr>
+            <th class="text-right py-2">السبب</th>
+            <th class="text-right py-2">المبلغ</th>
+            <th class="text-right py-2">من رحلة</th>
+            <th class="text-right py-2">الحالة</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set reason_ar = {'no_show':'العميل ماحضرش'} %}
+          {% for f in pending %}
+            <tr class="border-t border-white/5">
+              <td class="py-2">{{ reason_ar.get(f.reason, f.reason) }}</td>
+              <td class="py-2 font-mono">{{ '%.2f'|format(f.amount_egp) }} ج.م</td>
+              <td class="py-2">
+                {% if f.from_ride_id %}
+                  <a href="{{ url_for('rides.show', ride_id=f.from_ride_id) }}" class="text-primary hover:underline">#{{ f.from_ride_id }}</a>
+                {% else %}—{% endif %}
+              </td>
+              <td class="py-2 text-text-muted">
+                {% if f.waived_at %}اتشالت
+                {% elif f.applied_to_ride_id %}اتحسبت على #{{ f.applied_to_ride_id }}
+                {% else %}مفتوحة{% endif %}
+              </td>
+              <td class="py-2 text-left">
+                {% if current_user.is_admin and not f.waived_at and not f.applied_to_ride_id %}
+                  <form method="post" action="{{ url_for('customers.waive_fee', customer_id=customer.id, fee_id=f.id) }}" class="inline">
+                    <button class="text-primary hover:underline text-xs">شيل</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش غرامات.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">🚗 آخر الرحلات</h2>
+    {% if rides %}
+      <table class="w-full text-sm">
+        <thead class="text-text-muted">
+          <tr>
+            <th class="text-right py-2">#</th>
+            <th class="text-right py-2">الطريق</th>
+            <th class="text-right py-2">الكابتن</th>
+            <th class="text-right py-2">السعر</th>
+            <th class="text-right py-2">الحالة</th>
+            <th class="text-right py-2">إمتى</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set status_ar = {'new':'جديدة','broadcasting':'بندور','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش'} %}
+          {% for r in rides %}
+            <tr class="border-t border-white/5">
+              <td class="py-2"><a href="{{ url_for('rides.show', ride_id=r.id) }}" class="text-primary hover:underline">#{{ r.id }}</a></td>
+              <td class="py-2">{{ r.from_zone.name_ar if r.from_zone else '—' }} ← {{ r.to_zone.name_ar if r.to_zone else '—' }}</td>
+              <td class="py-2">{{ r.driver.name if r.driver else '—' }}</td>
+              <td class="py-2 font-mono">{{ '%.0f'|format(r.price_egp) }} ج.م</td>
+              <td class="py-2">{{ status_ar.get(r.status, r.status) }}</td>
+              <td class="py-2 text-text-muted">{{ r.created_at.strftime('%H:%M · %d %b') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-text-muted text-sm">مفيش رحلات لسه.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

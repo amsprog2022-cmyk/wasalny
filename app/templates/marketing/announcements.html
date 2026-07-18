@@ -1,0 +1,84 @@
+{% extends "layout/base.html" %}
+{% block title %}الإعلانات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-4xl mx-auto space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">📢 إعلانات داخل التطبيق</h1>
+      <p class="text-text-muted text-sm">بتظهر فوق شاشة العميل أو الكابتن في التطبيق.</p>
+    </div>
+    <a href="{{ url_for('marketing.index') }}" class="btn-ghost">← حملات الواتساب</a>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">إعلان جديد</h2>
+    <form method="post" action="{{ url_for('marketing.new_announcement') }}" class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs mb-1 text-white/80">مين هيشوفه</label>
+        <select name="audience" class="input">
+          <option value="both">التطبيقين</option>
+          <option value="customer">العملاء بس</option>
+          <option value="driver">الكباتن بس</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">الأهمية</label>
+        <select name="priority" class="input">
+          <option value="info">عادي</option>
+          <option value="warning">تحذير</option>
+          <option value="critical">مهم جداً</option>
+        </select>
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">العنوان</label>
+        <input name="title_ar" class="input" placeholder="مثال: مفيش عربية دلوقتي عشان الأمطار" />
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">التفاصيل</label>
+        <textarea name="body_ar" class="input" rows="2"></textarea>
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">ينتهي بعد كام ساعة (سيبها فاضية = دايماً)</label>
+        <input name="ends_in_hours" type="number" class="input" placeholder="٦" />
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">انشر</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">مين</th>
+          <th class="text-right px-4 py-3">الأهمية</th>
+          <th class="text-right px-4 py-3">العنوان</th>
+          <th class="text-right px-4 py-3">شغال لحد</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set aud_ar = {'both':'الاتنين','customer':'العملاء','driver':'الكباتن'} %}
+        {% set pri_ar = {'info':'عادي','warning':'تحذير','critical':'مهم'} %}
+        {% for a in announcements %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3 text-text-muted">#{{ a.id }}</td>
+            <td class="px-4 py-3">{{ aud_ar.get(a.audience, a.audience) }}</td>
+            <td class="px-4 py-3">
+              {% set color = {'info':'text-primary','warning':'text-warning','critical':'text-red-300'}.get(a.priority) %}
+              <span class="{{ color }}">{{ pri_ar.get(a.priority, a.priority) }}</span>
+            </td>
+            <td class="px-4 py-3">{{ a.title_ar or '—' }}</td>
+            <td class="px-4 py-3 text-text-muted">
+              {% if a.ends_at %}{{ a.ends_at.strftime('%H:%M · %d %b') }}{% else %}دايماً{% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="px-4 py-8 text-center text-text-muted">مفيش إعلانات.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

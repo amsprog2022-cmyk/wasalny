@@ -1,0 +1,93 @@
+{% extends "layout/base.html" %}
+{% block title %}نجدة · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold">🆘 نجدة</h1>
+    <p class="text-text-muted text-sm">لما عميل بيضغط زرار النجدة أثناء الرحلة.</p>
+  </div>
+
+  <section>
+    <h2 class="font-bold mb-3 text-red-300">مفتوحة ({{ open_alerts|length }})</h2>
+    {% if open_alerts %}
+      <div class="space-y-4">
+        {% for a in open_alerts %}
+          <div class="card border-l-4 border-red-400" style="border-left-width: 4px; border-left-color: #ef4444;">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <p class="text-lg font-bold">🚨 رحلة #{{ a.ride_id }}</p>
+                <p class="text-text-muted text-xs">{{ a.created_at.strftime('%H:%M:%S') }}</p>
+              </div>
+              <div class="flex gap-2">
+                {% if a.customer %}
+                  <a href="tel:+{{ a.customer.wa_id }}" class="btn-primary" style="padding: 6px 14px; font-size: 12px;">📞 كلم العميل</a>
+                {% endif %}
+                {% if a.driver %}
+                  <a href="tel:+{{ a.driver.wa_id }}" class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">📞 كلم الكابتن</a>
+                {% endif %}
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4 text-sm mb-3">
+              <div>
+                <p class="text-text-muted text-xs">العميل</p>
+                <p>{{ a.customer.name or a.customer.wa_id if a.customer else '—' }}</p>
+                <p class="text-text-muted font-mono text-xs" dir="ltr">{{ a.customer.wa_id if a.customer else '' }}</p>
+              </div>
+              <div>
+                <p class="text-text-muted text-xs">الكابتن</p>
+                <p>{{ a.driver.name if a.driver else 'مفيش' }}</p>
+                <p class="text-text-muted font-mono text-xs" dir="ltr">{{ a.driver.wa_id if a.driver else '' }}</p>
+              </div>
+            </div>
+            {% if a.message %}
+              <p class="text-white/80 text-sm mb-3">"{{ a.message }}"</p>
+            {% endif %}
+            <div class="flex gap-2">
+              <form method="post" action="{{ url_for('sos.acknowledge', sos_id=a.id) }}" class="inline">
+                <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">شفتها</button>
+              </form>
+              <form method="post" action="{{ url_for('sos.resolve', sos_id=a.id) }}" class="inline flex gap-2 flex-1">
+                <input name="notes" placeholder="اكتب اللي عملته" class="input flex-1" style="padding: 6px 14px;" />
+                <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">اتحلت</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="card text-center">
+        <p class="text-success">🙏 مفيش استغاثات دلوقتي. كله تمام.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 class="font-bold mb-3 text-text-muted">القديمة</h2>
+    {% set status_ar = {'open':'مفتوحة','acknowledged':'شفناها','resolved':'اتحلت'} %}
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">الرحلة</th>
+            <th class="text-right px-4 py-3">الحالة</th>
+            <th class="text-right px-4 py-3">ملاحظات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in past %}
+            <tr class="border-t border-white/5">
+              <td class="px-4 py-3 text-text-muted">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3"><a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">#{{ a.ride_id }}</a></td>
+              <td class="px-4 py-3">{{ status_ar.get(a.status, a.status) }}</td>
+              <td class="px-4 py-3 text-text-muted">{{ (a.notes or '')[:80] }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="px-4 py-8 text-center text-text-muted">مفيش قديمة.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

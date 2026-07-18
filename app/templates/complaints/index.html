@@ -1,0 +1,78 @@
+{% extends "layout/base.html" %}
+{% block title %}الشكاوى · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">الشكاوى</h1>
+      <p class="text-text-muted text-sm">حاول تحلها في أقل من ٤ ساعات.</p>
+    </div>
+  </div>
+
+  {% set tab_labels = {'open':'مفتوحة','resolved':'اتحلت','all':'الكل'} %}
+  <div class="flex gap-2 mb-4">
+    {% for slug, label, _ in tabs %}
+      <a href="{{ url_for('complaints.index', tab=slug) }}"
+         class="px-4 py-2 rounded-full text-sm {% if active_tab == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
+        {{ tab_labels.get(slug, label) }} <span class="opacity-70">({{ counts[slug] }})</span>
+      </a>
+    {% endfor %}
+  </div>
+
+  {% set cat_ar = {'missing_item':'حاجة اتنسيت','overcharge':'حساب زايد','rude':'الكابتن مش محترم','no_show':'الكابتن ماجاش','wrong_route':'راح طريق غلط','safety':'الأمان','other':'غير كده'} %}
+  {% set status_ar = {'open':'مفتوحة','in_progress':'شغالين عليها','waiting_user':'مستنيين الرد','resolved':'اتحلت','closed':'اتقفلت'} %}
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">#</th>
+          <th class="text-right px-4 py-3">اتقدمت من</th>
+          <th class="text-right px-4 py-3">الموضوع</th>
+          <th class="text-right px-4 py-3">النوع</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th class="text-right px-4 py-3">من إمتى</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in complaints %}
+          {% set age_hours = ((now - c.created_at).total_seconds() / 3600) %}
+          {% set breach_cls = 'text-red-300' if age_hours > 24 else ('text-warning' if age_hours > 4 else 'text-text-muted') %}
+          <tr class="border-t border-white/5 hover:bg-white/[0.02]">
+            <td class="px-4 py-3 text-text-muted">#{{ c.id }}</td>
+            <td class="px-4 py-3">
+              {% if c.filed_by_kind == 'customer' %}
+                {% set cust = customers.get(c.filed_by_id) %}
+                🧍 {{ cust.name or cust.wa_id if cust else '—' }}
+              {% elif c.filed_by_kind == 'driver' %}
+                {% set drv = drivers.get(c.filed_by_id) %}
+                🚗 {{ drv.name if drv else '—' }}
+              {% else %}
+                🛠️ أدمن
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">{{ c.subject }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ cat_ar.get(c.category, c.category) }}</td>
+            <td class="px-4 py-3">
+              {% if c.status in ('resolved', 'closed') %}
+                <span class="text-success">{{ status_ar.get(c.status, c.status) }}</span>
+              {% else %}
+                <span class="text-primary">{{ status_ar.get(c.status, c.status) }}</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 {{ breach_cls }}">
+              {{ '%.1f'|format(age_hours) }} ساعة
+              {% if age_hours > 24 %}⚠️{% elif age_hours > 4 %}!{% endif %}
+            </td>
+            <td class="px-4 py-3 text-left">
+              <a href="{{ url_for('complaints.show', complaint_id=c.id) }}" class="text-primary hover:underline">تفاصيل</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="px-4 py-12 text-center text-text-muted">مفيش شكاوى هنا.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تم استلام طلبك · وصلني بنها</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: {
+      bg: '#111125', surface: '#1E1E32', primary: '#F57C00',
+      success: '#22C55E', 'text-muted': '#9BA3A8',
+    }}}};
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <style>
+    body { background: #111125; font-family: 'Cairo', sans-serif; }
+    .card { background: #1E1E32; border-radius: 16px; padding: 32px; }
+    .btn-primary {
+      background: #F57C00; color: #fff; border-radius: 999px;
+      padding: 12px 28px; font-weight: 700;
+    }
+  </style>
+</head>
+<body class="text-white min-h-screen flex items-center justify-center px-4">
+  <div class="max-w-md w-full text-center">
+
+    <div class="text-7xl mb-4">✅</div>
+    <h1 class="text-2xl font-black text-success mb-2">تم استلام طلبك بنجاح!</h1>
+    <p class="text-text-muted mb-6">شكراً {{ driver.name }} 🙏</p>
+
+    <div class="card text-right space-y-4">
+      <div>
+        <p class="text-text-muted text-xs">📞 رقم الهاتف</p>
+        <p class="font-mono font-bold" dir="ltr">+{{ driver.wa_id }}</p>
+      </div>
+      <div>
+        <p class="text-text-muted text-xs">🚗 العربية</p>
+        <p>{{ driver.car_model }} · {{ driver.car_plate }}</p>
+      </div>
+      <div class="border-t border-white/10 pt-4">
+        <p class="text-text-muted text-xs mb-2">📋 الخطوات القادمة:</p>
+        <ol class="space-y-2 text-sm">
+          <li class="flex gap-2"><span class="text-primary">١.</span> هيتم مراجعة طلبك من الإدارة خلال ٢٤ ساعة</li>
+          <li class="flex gap-2"><span class="text-primary">٢.</span> لما يتم قبولك، هتقدر تفتح تطبيق الكابتن وتشتغل</li>
+          <li class="flex gap-2"><span class="text-primary">٣.</span> كلمة السر الافتراضية هيبعتها لك الإدارة على واتساب</li>
+        </ol>
+      </div>
+    </div>
+
+    <a href="{{ url_for('captain_signup.register') }}" class="btn-primary inline-block mt-6">
+      تسجيل كابتن آخر
+    </a>
+
+    <p class="text-text-muted text-xs mt-6">للاستفسار اتصل بنا على 01029188887</p>
+  </div>
+</body>
+</html>
