@@ -54,6 +54,8 @@ class Config:
     WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "verify-me")
     WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
     WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
+    # Escape hatch for debugging bad secrets — do not use in production.
+    WHATSAPP_SKIP_SIGNATURE_CHECK = os.getenv("WHATSAPP_SKIP_SIGNATURE_CHECK", "")
 
     # Initial admin bootstrap
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@wassalny.com")

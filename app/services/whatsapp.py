@@ -101,18 +101,48 @@ def _post(payload: dict) -> dict:
 
 
 def verify_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
-    """Verify X-Hub-Signature-256 from Meta."""
-    app_secret = current_app.config.get("WHATSAPP_APP_SECRET", "")
-    if not app_secret or not signature_header:
-        # In dev/local (no secret set) we accept — but log a warning.
+    """Verify X-Hub-Signature-256 from Meta.
+
+    Robust to common paste issues (whitespace, surrounding quotes) and logs
+    enough detail to diagnose mismatches without leaking the full secret.
+    """
+    # Escape hatch for debugging bad configs — set WHATSAPP_SKIP_SIGNATURE_CHECK=true
+    # to bypass entirely. USE ONLY WHEN TESTING; never in real production.
+    if str(current_app.config.get("WHATSAPP_SKIP_SIGNATURE_CHECK", "")).lower() in ("1", "true", "yes"):
+        log.warning("Webhook signature check bypassed via WHATSAPP_SKIP_SIGNATURE_CHECK")
+        return True
+
+    app_secret_raw = current_app.config.get("WHATSAPP_APP_SECRET", "") or ""
+    # Strip whitespace and any accidental surrounding quotes from a paste
+    app_secret = app_secret_raw.strip().strip('"').strip("'")
+
+    if not app_secret:
         log.warning("Webhook signature check skipped (no WHATSAPP_APP_SECRET set)")
         return True
 
+    if not signature_header:
+        log.warning("Webhook rejected: signature header missing (secret is set)")
+        return False
+
     if not signature_header.startswith("sha256="):
+        log.warning("Webhook rejected: signature header wrong format: %s", signature_header[:20])
         return False
 
     expected = hmac.new(
         app_secret.encode("utf-8"), raw_body, hashlib.sha256
     ).hexdigest()
-    provided = signature_header.split("=", 1)[1]
-    return hmac.compare_digest(expected, provided)
+    provided = signature_header.split("=", 1)[1].strip()
+
+    if hmac.compare_digest(expected, provided):
+        return True
+
+    # Loud diagnostic on mismatch — only first 8 chars of each hash + secret hash
+    # so we don't leak values but can spot obvious differences.
+    log.warning(
+        "Signature mismatch. expected=%s… provided=%s… body_len=%d secret_hash=%s…",
+        expected[:8],
+        provided[:8],
+        len(raw_body),
+        hashlib.sha256(app_secret.encode("utf-8")).hexdigest()[:8],
+    )
+    return False
