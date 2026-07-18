@@ -110,7 +110,10 @@ def mark_broadcasting(ride: Ride) -> None:
         ride.status = "broadcasting"
         _record(ride.id, "broadcast_started", "system")
         db.session.commit()
+        # Two events: generic status change AND the "searching driver" signal
+        # that the customer app uses to trigger its radar animation.
         _emit_customer(ride, "trip_status_changed")
+        _emit_customer(ride, "broadcast_started")
 
 
 def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None) -> None:

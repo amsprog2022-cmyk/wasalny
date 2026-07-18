@@ -111,6 +111,142 @@ def driver_availability():
     return jsonify(av.get_presence(did).__dict__)
 
 
+# ---------- customer profile ----------
+
+@rides_api_bp.get("/customer/me")
+@jwt_required()
+def customer_me():
+    from sqlalchemy import func
+    from app.models.ride import CustomerPendingFee
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    c = db.session.get(Customer, cid)
+    if c is None:
+        return jsonify({"error": "not_found"}), 404
+    completed = Ride.query.filter_by(customer_id=cid, status="completed")
+    stats = completed.with_entities(
+        func.count(Ride.id), func.sum(Ride.price_egp)
+    ).first()
+    pending_egp = (
+        CustomerPendingFee.query.filter_by(
+            customer_id=cid, applied_to_ride_id=None, waived_at=None
+        )
+        .with_entities(func.sum(CustomerPendingFee.amount_egp))
+        .scalar()
+        or 0
+    )
+    return jsonify(
+        {
+            "id": c.id,
+            "wa_id": c.wa_id,
+            "name": c.name,
+            "total_trips": int(stats[0] or 0),
+            "total_spent_egp": float(stats[1] or 0),
+            "pending_fees_egp": float(pending_egp),
+            "created_at": c.created_at.isoformat() if getattr(c, "created_at", None) else None,
+        }
+    )
+
+
+@rides_api_bp.patch("/customer/me")
+@jwt_required()
+def customer_me_update():
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    c = db.session.get(Customer, cid)
+    if c is None:
+        return jsonify({"error": "not_found"}), 404
+    data = request.json or {}
+    new_name = (data.get("name") or "").strip()
+    if new_name:
+        c.name = new_name[:120]
+        db.session.commit()
+    return jsonify({"id": c.id, "wa_id": c.wa_id, "name": c.name})
+
+
+@rides_api_bp.get("/customer/rides")
+@jwt_required()
+def customer_rides():
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    limit = min(int(request.args.get("limit", 20)), 100)
+    rides = (
+        Ride.query.filter_by(customer_id=cid)
+        .order_by(Ride.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return jsonify([r.to_dict() for r in rides])
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/rate")
+@jwt_required()
+def rides_rate(ride_id: int):
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None or ride.customer_id != cid:
+        return jsonify({"error": "forbidden"}), 403
+    if ride.status != "completed":
+        return jsonify({"error": "not_completed"}), 409
+    if ride.rating is not None:
+        return jsonify({"error": "already_rated"}), 409
+    data = request.json or {}
+    try:
+        stars = int(data.get("stars"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "stars_required"}), 400
+    if not 1 <= stars <= 5:
+        return jsonify({"error": "stars_out_of_range"}), 400
+    ride.rating = stars
+    ride.rating_comment = (data.get("comment") or "").strip()[:500] or None
+
+    # Update driver's rolling rating (simple avg over last 50 completed rides)
+    from sqlalchemy import func
+    if ride.driver_id:
+        rows = (
+            Ride.query.filter(
+                Ride.driver_id == ride.driver_id,
+                Ride.rating.isnot(None),
+                Ride.status == "completed",
+            )
+            .order_by(Ride.completed_at.desc())
+            .limit(50)
+            .all()
+        )
+        if rows:
+            avg = sum(r.rating for r in rows) / len(rows)
+            drv = db.session.get(Driver, ride.driver_id)
+            if drv is not None:
+                drv.rating = round(avg, 2)
+    db.session.commit()
+    return jsonify(ride.to_dict())
+
+
+@rides_api_bp.post("/customer/fcm-token")
+@jwt_required()
+def customer_fcm_token():
+    """Placeholder: store the customer's Firebase Cloud Messaging token so we
+    can push trip updates when the app is in background. Wired to no-op until
+    we have Firebase credentials configured.
+    """
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    data = request.json or {}
+    token = (data.get("token") or "").strip()
+    platform = (data.get("platform") or "").strip()
+    if not token:
+        return jsonify({"error": "token_required"}), 400
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    r.hset(f"customer:{cid}:fcm", mapping={"token": token, "platform": platform or "unknown"})
+    return jsonify({"stored": True})
+
+
 # ---------- customer auth (Decision #6: phone-only, no OTP) ----------
 
 @rides_api_bp.post("/customer/login")
