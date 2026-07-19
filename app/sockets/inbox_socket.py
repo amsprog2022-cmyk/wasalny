@@ -13,5 +13,6 @@ def on_connect():
 
 
 @socketio.on("disconnect", namespace="/inbox")
-def on_disconnect():
+def on_disconnect(reason=None):
+    # reason arg added in python-socketio 5.12+.
     pass

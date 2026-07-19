@@ -69,9 +69,10 @@ class DriverNamespace(Namespace):
         join_room(f"driver:{driver_id}")
         emit("driver:presence", av.get_presence(driver_id).__dict__)
 
-    def on_disconnect(self):
+    def on_disconnect(self, reason=None):
         # We don't force-offline here — the heartbeat timeout does it.
         # Prevents flapping when the captain briefly loses signal.
+        # reason arg added in python-socketio 5.12+.
         pass
 
     def on_driver_online(self, data):

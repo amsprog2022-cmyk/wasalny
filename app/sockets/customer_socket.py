@@ -57,7 +57,8 @@ class CustomerNamespace(Namespace):
         join_room(f"customer:{cid}")
         emit("customer:connected", {"customer_id": cid})
 
-    def on_disconnect(self):
+    def on_disconnect(self, reason=None):
+        # reason arg added in python-socketio 5.12+; accept it to stay compatible.
         pass
 
 
