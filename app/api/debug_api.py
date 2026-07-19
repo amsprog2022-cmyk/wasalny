@@ -331,23 +331,41 @@ def whatsapp_token_debug():
     if not token:
         return jsonify({"error": "no token"}), 500
 
-    def _get(url):
+    def _get(url, use_header=True):
         try:
-            r = _r.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            if use_header:
+                r = _r.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            else:
+                sep = "&" if "?" in url else "?"
+                r = _r.get(f"{url}{sep}access_token={token}", timeout=10)
             return {"status": r.status_code, "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text[:300]}
         except _r.RequestException as e:
             return {"status": -1, "error": str(e)[:200]}
 
-    debug_token = _get(f"https://graph.facebook.com/{api_ver}/debug_token?input_token={token}")
-    me = _get(f"https://graph.facebook.com/{api_ver}/me")
-    waba_read = _get(f"https://graph.facebook.com/{api_ver}/{waba}?fields=id,name,timezone_id,message_template_namespace")
+    # Try both header and query param — some proxies mangle the Authorization header
+    debug_token_hdr = _get(f"https://graph.facebook.com/{api_ver}/debug_token?input_token={token}")
+    debug_token_qs = _get(f"https://graph.facebook.com/{api_ver}/debug_token?input_token={token}", use_header=False)
+    me_hdr = _get(f"https://graph.facebook.com/{api_ver}/me")
+    me_qs = _get(f"https://graph.facebook.com/{api_ver}/me", use_header=False)
+    waba_read = _get(f"https://graph.facebook.com/{api_ver}/{waba}?fields=id,name")
+    waba_read_qs = _get(f"https://graph.facebook.com/{api_ver}/{waba}?fields=id,name", use_header=False)
 
     return jsonify({
         "api_version": api_ver,
         "waba_id_configured": waba,
-        "debug_token": debug_token,
-        "me": me,
-        "waba_read": waba_read,
+        "token_meta": {
+            "length": len(token),
+            "last4": token[-4:] if len(token) >= 4 else None,
+            "first4": token[:4] if len(token) >= 4 else None,
+            "has_whitespace": any(c.isspace() for c in token),
+            "has_non_ascii": any(ord(c) > 127 for c in token),
+        },
+        "debug_token_via_header": debug_token_hdr,
+        "debug_token_via_query": debug_token_qs,
+        "me_via_header": me_hdr,
+        "me_via_query": me_qs,
+        "waba_read_via_header": waba_read,
+        "waba_read_via_query": waba_read_qs,
     })
 
 
