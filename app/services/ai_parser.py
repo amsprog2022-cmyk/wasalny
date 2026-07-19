@@ -81,19 +81,39 @@ def _build_prompt(user_message: str, prior: dict | None = None) -> str:
 
 
 def _extract_json(text: str) -> dict | None:
-    """Gemini often wraps JSON in ```json blocks — strip and parse."""
+    """Extract a JSON object from Gemini's response.
+
+    Handles three cases:
+      1. Clean JSON: ``{"intent": ...}``
+      2. Markdown-wrapped: ```` ```json {...} ``` ````
+      3. Missing trailing ``}`` (Gemini sometimes truncates in structured mode)
+    """
     text = text.strip()
     # Strip common markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    # Try greedy JSON object match
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        return None
+
+    # Fast path: whole string is valid JSON
     try:
-        return json.loads(m.group(0))
+        return json.loads(text)
     except json.JSONDecodeError:
-        return None
+        pass
+
+    # Auto-repair: add a trailing `}` if we saw `{` but never a closing `}`.
+    if text.startswith("{") and not text.rstrip().endswith("}"):
+        try:
+            return json.loads(text + "}")
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: greedy match a { ... } inside the string
+    m = re.search(r"\{[\s\S]*\}", text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return None
+    return None
 
 
 def _call_gemini(prompt: str) -> str:
@@ -114,7 +134,11 @@ def _call_gemini(prompt: str) -> str:
     resp = requests.post(url, json=payload, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    # Newer Gemini models split responses across multiple `parts` entries
+    # (e.g. thoughtSignature chunks + text chunks). Concatenate every part
+    # that has a `text` field so we never lose trailing characters.
+    parts = data["candidates"][0]["content"].get("parts") or []
+    return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
 
 
 def parse_message(user_message: str, prior: dict | None = None) -> ParseResult:
