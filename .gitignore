@@ -8,6 +8,9 @@ venv/
 env/
 .env
 .env.local
+secrets/
+*.p8
+firebase-service-account*.json
 *.db
 *.sqlite
 *.sqlite3

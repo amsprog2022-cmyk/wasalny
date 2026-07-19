@@ -84,10 +84,81 @@ def create_app(config_class=Config):
 
     with app.app_context():
         db.create_all()
+        _apply_lightweight_migrations(app)
         _bootstrap_admin(app)
         _bootstrap_zones(app)
+        _init_firebase_admin(app)
 
     return app
+
+
+def _apply_lightweight_migrations(app):
+    """Additive column migrations that must run every boot.
+
+    `db.create_all()` won't add new columns to tables that already exist,
+    so we run explicit `ADD COLUMN IF NOT EXISTS` for Postgres or a
+    PRAGMA-guarded ALTER for SQLite. Safe to run repeatedly.
+    """
+    from sqlalchemy import text
+
+    fcm_columns = [
+        ("fcm_token", "TEXT"),
+        ("fcm_platform", "VARCHAR(16)"),
+        ("fcm_updated_at", "TIMESTAMP"),
+    ]
+    tables = ("customers", "drivers")
+
+    dialect = db.engine.dialect.name
+    with db.engine.begin() as conn:
+        for table in tables:
+            for col, coltype in fcm_columns:
+                if dialect == "postgresql":
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                    ))
+                elif dialect == "sqlite":
+                    existing = {row[1] for row in conn.execute(
+                        text(f"PRAGMA table_info({table})")
+                    ).fetchall()}
+                    if col not in existing:
+                        conn.execute(text(
+                            f"ALTER TABLE {table} ADD COLUMN {col} {coltype}"
+                        ))
+    print("[migrate] FCM columns ensured on customers + drivers")
+
+
+def _init_firebase_admin(app):
+    """Initialize firebase-admin from the FIREBASE_SERVICE_ACCOUNT_JSON env var.
+
+    Accepts either raw JSON or a base64-encoded JSON blob. Silent-fails
+    when the env var is missing so local dev boots without needing FCM.
+    """
+    raw = app.config.get("FIREBASE_SERVICE_ACCOUNT_JSON") or ""
+    if not raw.strip():
+        print("[firebase] service account env var not set — push disabled")
+        return
+
+    import json, base64
+    try:
+        import firebase_admin
+        from firebase_admin import credentials
+    except ImportError:
+        print("[firebase] firebase-admin not installed — push disabled")
+        return
+
+    if firebase_admin._apps:
+        return
+
+    try:
+        data = raw.strip()
+        if not data.startswith("{"):
+            data = base64.b64decode(data).decode("utf-8")
+        info = json.loads(data)
+        cred = credentials.Certificate(info)
+        firebase_admin.initialize_app(cred)
+        print(f"[firebase] Admin SDK initialized for project {info.get('project_id')}")
+    except Exception as e:
+        print(f"[firebase] init failed: {e}")
 
 
 def _bootstrap_admin(app):
