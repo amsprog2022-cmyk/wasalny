@@ -483,6 +483,8 @@ def gemini_status():
         result = ai_parser.parse_message(info["test_prompt"])
         info["latency_ms"] = int((time.time() - t0) * 1000)
         info["result"] = result.to_dict()
+        # raw_response holds the underlying error string when used_fallback=True
+        info["raw_response"] = result.raw_response[:500] if result.raw_response else None
         info["verdict"] = (
             "✅ Gemini responds correctly"
             if result.intent == "book_ride" and not result.used_fallback
@@ -494,6 +496,19 @@ def gemini_status():
         info["latency_ms"] = int((time.time() - t0) * 1000)
         info["error"] = str(e)[:300]
         info["verdict"] = f"❌ Gemini call failed: {type(e).__name__}"
+
+    # Also do a raw call to Google to expose the actual HTTP error
+    try:
+        import requests as _r
+        raw_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        raw_resp = _r.post(raw_url, json={
+            "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+        }, timeout=5)
+        info["raw_google_status"] = raw_resp.status_code
+        info["raw_google_body"] = raw_resp.text[:500]
+    except Exception as e:  # noqa: BLE001
+        info["raw_google_status"] = -1
+        info["raw_google_error"] = str(e)[:300]
 
     return jsonify(info)
 
