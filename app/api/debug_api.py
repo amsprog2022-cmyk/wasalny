@@ -449,6 +449,55 @@ def whatsapp_subscribe_app():
     })
 
 
+@debug_api_bp.get("/gemini-status")
+def gemini_status():
+    """Report Gemini config + do a live one-shot round-trip test.
+
+    Sends a fake booking request to Gemini and reports the parsed output.
+    Safe to expose — reveals model, latency, and a snippet of the reply.
+    """
+    import time
+    key = current_app.config.get("GEMINI_API_KEY") or ""
+    model = current_app.config.get("GEMINI_MODEL") or "gemini-2.0-flash"
+
+    info = {
+        "gemini_api_key_set": bool(key),
+        "gemini_api_key_length": len(key),
+        "model": model,
+        "test_prompt": "عايز رحلة من الرملة لجامعة بنها",
+    }
+
+    if not key:
+        info["verdict"] = "❌ GEMINI_API_KEY not set — AI booking pipeline will fail"
+        return jsonify(info)
+
+    try:
+        from app.services import ai_parser
+    except Exception as e:  # noqa: BLE001
+        info["error"] = f"import failed: {e}"
+        info["verdict"] = "❌ ai_parser module failed to import"
+        return jsonify(info)
+
+    t0 = time.time()
+    try:
+        result = ai_parser.parse_message(info["test_prompt"])
+        info["latency_ms"] = int((time.time() - t0) * 1000)
+        info["result"] = result.to_dict()
+        info["verdict"] = (
+            "✅ Gemini responds correctly"
+            if result.intent == "book_ride" and not result.used_fallback
+            else "⚠️  Gemini fell back / low confidence — check API key or model"
+            if result.used_fallback
+            else f"⚠️  Intent={result.intent} (expected book_ride)"
+        )
+    except Exception as e:  # noqa: BLE001
+        info["latency_ms"] = int((time.time() - t0) * 1000)
+        info["error"] = str(e)[:300]
+        info["verdict"] = f"❌ Gemini call failed: {type(e).__name__}"
+
+    return jsonify(info)
+
+
 @debug_api_bp.get("/whatsapp-status")
 def whatsapp_status():
     """Show whether WhatsApp env vars are set on this Railway instance.
