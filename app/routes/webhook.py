@@ -30,6 +30,14 @@ def receive():
     raw = request.get_data()
     signature = request.headers.get("X-Hub-Signature-256", "")
 
+    # TEMP: log every hit so we can debug whether Meta is reaching us.
+    log.info(
+        "[webhook POST] received %d bytes, sig=%s, body_preview=%r",
+        len(raw),
+        signature[:16] + "..." if signature else "MISSING",
+        raw[:200],
+    )
+
     if not whatsapp.verify_webhook_signature(raw, signature):
         log.warning("Invalid webhook signature")
         abort(403)
