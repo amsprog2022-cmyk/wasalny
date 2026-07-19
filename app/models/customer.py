@@ -23,6 +23,11 @@ class Customer(db.Model):
     fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
     fcm_updated_at = db.Column(db.DateTime)
 
+    # Soft-delete: preserve trip history + referential integrity while
+    # blocking login and clearing PII. Required by App Store + Play Store
+    # policies (in-app account deletion).
+    deleted_at = db.Column(db.DateTime)
+
     conversations = db.relationship("Conversation", backref="customer", lazy="dynamic")
 
     def set_password(self, plain: str) -> None:

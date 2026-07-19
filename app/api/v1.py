@@ -56,6 +56,8 @@ def driver_login():
     if not driver:
         return jsonify({"error": "not_found"}), 404
 
+    if driver.deleted_at is not None:
+        return jsonify({"error": "account_deleted", "message_ar": "الحساب اتحذف."}), 403
     if driver.approval_status == "pending":
         return jsonify({"error": "pending_approval", "message_ar": "حسابك تحت المراجعة. برجاء الانتظار."}), 403
     if driver.approval_status == "rejected" or not driver.is_active:

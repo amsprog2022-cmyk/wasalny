@@ -52,6 +52,11 @@ class Driver(db.Model):
     fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
     fcm_updated_at = db.Column(db.DateTime)
 
+    # Soft-delete: preserves earnings/rides history + referential integrity
+    # while blocking login and clearing PII. Required by App Store + Play
+    # Store policies (in-app account deletion).
+    deleted_at = db.Column(db.DateTime)
+
     # Housekeeping
     status = db.Column(db.String(20), default="offline", nullable=False)  # legacy inbox filter
     is_active = db.Column(db.Boolean, default=True, nullable=False)

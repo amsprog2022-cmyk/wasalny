@@ -381,6 +381,8 @@ def customer_register():
 
     existing = Customer.query.filter_by(wa_id=wa_id).first()
     if existing is not None:
+        if existing.deleted_at is not None:
+            return jsonify({"error": "account_deleted"}), 403
         return jsonify({"error": "phone_already_registered"}), 409
 
     customer = Customer(wa_id=wa_id, name=name)
@@ -406,6 +408,8 @@ def customer_login():
     customer = Customer.query.filter_by(wa_id=wa_id).first()
     if customer is None:
         return jsonify({"error": "not_registered"}), 404
+    if customer.deleted_at is not None:
+        return jsonify({"error": "account_deleted"}), 403
 
     # Legacy account created before we required passwords — issue a token
     # so the app can prompt the user to set one on the next screen.
@@ -424,6 +428,62 @@ def customer_login():
         "access_token": _issue_customer_token(customer),
         "customer": _customer_payload(customer),
     })
+
+
+@rides_api_bp.post("/customer/delete-account")
+@jwt_required()
+def customer_delete_account():
+    """In-app account deletion (required by App Store + Play Store policies).
+
+    Soft-deletes: sets deleted_at, clears PII (name → 'محذوف'), removes FCM
+    token, but preserves trip history so captain earnings + admin reports
+    remain intact. Login is blocked from this point on.
+    """
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    customer = db.session.get(Customer, cid)
+    if customer is None:
+        return jsonify({"error": "not_found"}), 404
+    if customer.deleted_at is not None:
+        return jsonify({"error": "already_deleted"}), 400
+
+    from datetime import datetime
+    customer.deleted_at = datetime.utcnow()
+    customer.name = "محذوف"
+    customer.fcm_token = None
+    customer.opted_in = False
+    db.session.commit()
+    return jsonify({"deleted": True})
+
+
+@rides_api_bp.post("/driver/delete-account")
+@jwt_required()
+def driver_delete_account():
+    """In-app account deletion for captains.
+
+    Same soft-delete strategy as customers: clears PII + FCM + name → 'محذوف',
+    keeps earnings history for admin reconciliation. Also marks driver
+    inactive so they cannot be assigned rides.
+    """
+    from datetime import datetime
+    identity = get_jwt_identity()
+    if not identity or not identity.startswith("driver:"):
+        return jsonify({"error": "driver_token_required"}), 403
+    did = int(identity.split(":", 1)[1])
+    driver = db.session.get(Driver, did)
+    if driver is None:
+        return jsonify({"error": "not_found"}), 404
+    if driver.deleted_at is not None:
+        return jsonify({"error": "already_deleted"}), 400
+
+    driver.deleted_at = datetime.utcnow()
+    driver.name = "محذوف"
+    driver.fcm_token = None
+    driver.is_active = False
+    driver.discipline_status = "banned"
+    db.session.commit()
+    return jsonify({"deleted": True})
 
 
 @rides_api_bp.post("/customer/set-password")

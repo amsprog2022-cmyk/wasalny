@@ -140,7 +140,22 @@ def _apply_lightweight_migrations(app):
                 conn.execute(text(
                     "ALTER TABLE customers ADD COLUMN password_hash VARCHAR(255)"
                 ))
-    print("[migrate] FCM columns + customer password_hash ensured")
+
+        # Soft-delete columns for App/Play Store account-deletion requirement.
+        for table in ("customers", "drivers"):
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text(f"PRAGMA table_info({table})")
+                ).fetchall()}
+                if "deleted_at" not in existing:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN deleted_at TIMESTAMP"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at ensured")
 
 
 def _init_firebase_admin(app):
