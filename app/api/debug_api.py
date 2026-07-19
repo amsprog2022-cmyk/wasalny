@@ -12,6 +12,8 @@ import os
 
 from flask import Blueprint, current_app, jsonify, request
 
+from sqlalchemy import inspect, text
+
 from app import db
 from app.models.customer import Customer
 from app.models.driver import Driver
@@ -132,3 +134,137 @@ def firebase_send():
         return jsonify({"error": "must provide one of: token, customer_id, driver_id"}), 400
 
     return jsonify(result)
+
+
+@debug_api_bp.get("/fcm-readiness")
+def fcm_readiness():
+    """Full readiness check: are we ready to send push notifications?
+
+    Runs 8 discrete checks and returns pass/fail + overall verdict.
+    Safe to expose — reveals only presence/absence, no secrets.
+    """
+    checks = []
+
+    # 1. env var present
+    raw = (current_app.config.get("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip()
+    checks.append({
+        "name": "FIREBASE_SERVICE_ACCOUNT_JSON env var set",
+        "pass": bool(raw),
+        "detail": f"length={len(raw)}" if raw else "MISSING — add on Railway → Variables",
+    })
+
+    # 2. env var parses as valid JSON
+    parsed = None
+    parse_err = None
+    if raw:
+        try:
+            data = raw if raw.startswith("{") else __import__("base64").b64decode(raw).decode("utf-8")
+            parsed = json.loads(data)
+        except Exception as e:  # noqa: BLE001
+            parse_err = str(e)[:200]
+    checks.append({
+        "name": "Service account JSON parses",
+        "pass": parsed is not None,
+        "detail": parse_err or (f"project={parsed.get('project_id')}, type={parsed.get('type')}"
+                                 if parsed else "n/a"),
+    })
+
+    # 3. service account has private key
+    has_key = bool(parsed and parsed.get("private_key") and parsed.get("type") == "service_account")
+    checks.append({
+        "name": "Service account has private_key + correct type",
+        "pass": has_key,
+        "detail": "OK" if has_key else "JSON missing private_key or type != service_account",
+    })
+
+    # 4. firebase-admin library installed
+    try:
+        import firebase_admin  # noqa: WPS433
+        fb_installed = True
+    except ImportError:
+        firebase_admin = None
+        fb_installed = False
+    checks.append({
+        "name": "firebase-admin library installed",
+        "pass": fb_installed,
+        "detail": "OK" if fb_installed else "pip install firebase-admin==6.5.0",
+    })
+
+    # 5. firebase-admin initialized at boot
+    fb_initialized = fb_installed and bool(firebase_admin._apps)
+    loaded_project = None
+    if fb_initialized:
+        default = firebase_admin.get_app()
+        loaded_project = getattr(default, "project_id", None) or default.options.get("projectId")
+    checks.append({
+        "name": "firebase-admin initialized on boot",
+        "pass": fb_initialized,
+        "detail": f"project={loaded_project}" if fb_initialized else "boot log should show '[firebase] Admin SDK initialized'",
+    })
+
+    # 6. DB columns present on customers + drivers
+    inspector = inspect(db.engine)
+    required_cols = {"fcm_token", "fcm_platform", "fcm_updated_at"}
+    customer_cols = {c["name"] for c in inspector.get_columns("customers")}
+    driver_cols = {c["name"] for c in inspector.get_columns("drivers")}
+    cust_missing = required_cols - customer_cols
+    driv_missing = required_cols - driver_cols
+    checks.append({
+        "name": "DB migration: fcm_* columns exist on customers + drivers",
+        "pass": not cust_missing and not driv_missing,
+        "detail": (f"customers missing: {cust_missing}, drivers missing: {driv_missing}"
+                   if cust_missing or driv_missing else "all 3 columns on both tables"),
+    })
+
+    # 7. at least one device has registered a token
+    cust_with_tok = db.session.query(db.func.count(Customer.id)).filter(
+        Customer.fcm_token.isnot(None)
+    ).scalar()
+    driv_with_tok = db.session.query(db.func.count(Driver.id)).filter(
+        Driver.fcm_token.isnot(None)
+    ).scalar()
+    checks.append({
+        "name": "At least one device has registered an FCM token",
+        "pass": (cust_with_tok + driv_with_tok) > 0,
+        "detail": f"customers={cust_with_tok}, drivers={driv_with_tok}",
+    })
+
+    # 8. DEBUG_TOKEN set (needed for the /send test route)
+    debug_tok_set = bool(os.getenv("DEBUG_TOKEN", "").strip())
+    checks.append({
+        "name": "DEBUG_TOKEN env var set (for /firebase-send)",
+        "pass": debug_tok_set,
+        "detail": "OK" if debug_tok_set else "add DEBUG_TOKEN=<random-string> on Railway",
+    })
+
+    # Overall verdict
+    core_ready = all(c["pass"] for c in checks[:6])  # 1-6 are the mandatory ones
+    full_ready = all(c["pass"] for c in checks)
+
+    verdict = (
+        "✅ READY — you can send push notifications now"
+        if core_ready and cust_with_tok + driv_with_tok > 0
+        else "⚠️  PARTIAL — Firebase is wired but no devices have logged in yet to register tokens"
+        if core_ready
+        else "❌ NOT READY — see failing checks below"
+    )
+
+    return jsonify({
+        "verdict": verdict,
+        "core_ready": core_ready,
+        "fully_ready": full_ready,
+        "checks": checks,
+        "next_action": _next_action(checks, cust_with_tok, driv_with_tok, debug_tok_set),
+    })
+
+
+def _next_action(checks, cust_tokens, driv_tokens, debug_tok_set):
+    """Give the user one clear thing to do next."""
+    for c in checks[:6]:
+        if not c["pass"]:
+            return f"Fix: {c['name']} — {c['detail']}"
+    if cust_tokens + driv_tokens == 0:
+        return "Log into the customer or captain app on your phone so it registers an FCM token"
+    if not debug_tok_set:
+        return "Optional: set DEBUG_TOKEN on Railway if you want to use /firebase-send. Everything else is ready."
+    return "All checks passed. Try sending: POST /api/v1/debug/firebase-send with X-Debug-Token header."
