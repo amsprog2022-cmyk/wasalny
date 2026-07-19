@@ -52,6 +52,7 @@ def create_app(config_class=Config):
     from app.routes.audit import audit_bp
     from app.api.v1 import api_v1_bp
     from app.api.rides_api import rides_api_bp
+    from app.api.debug_api import debug_api_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(inbox_bp)
@@ -73,6 +74,7 @@ def create_app(config_class=Config):
     app.register_blueprint(audit_bp)
     app.register_blueprint(api_v1_bp)
     app.register_blueprint(rides_api_bp)
+    app.register_blueprint(debug_api_bp)
 
     from app.sockets import inbox_socket  # noqa: F401
     from app.sockets import driver_socket  # noqa: F401
