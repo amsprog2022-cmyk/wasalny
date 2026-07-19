@@ -484,7 +484,7 @@ def gemini_status():
         info["latency_ms"] = int((time.time() - t0) * 1000)
         info["result"] = result.to_dict()
         # raw_response holds the underlying error string when used_fallback=True
-        info["raw_response"] = result.raw_response[:500] if result.raw_response else None
+        info["raw_response"] = result.raw_response[:2000] if result.raw_response else None
         info["verdict"] = (
             "✅ Gemini responds correctly"
             if result.intent == "book_ride" and not result.used_fallback
