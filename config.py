@@ -46,9 +46,10 @@ class Config:
     FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "wasalny-de5bf")
 
-    # AI parser (Gemini 2.0 Flash — Decision #19)
+    # AI parser — gemini-2.0-flash was retired mid-2026, so we default to
+    # the -latest alias which always follows Google's current fast model.
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
     GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "3"))
     AI_SESSION_TTL_MINUTES = int(os.getenv("AI_SESSION_TTL_MINUTES", "30"))
 
