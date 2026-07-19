@@ -3,12 +3,16 @@
 Takes an incoming customer WhatsApp message and returns a structured intent:
 
     {
-      "intent": "book_ride" | "clarify" | "unknown",
+      "intent": "book_ride" | "clarify" | "chat" | "unknown",
       "from_zone_slug": "ramla" | null,
       "to_zone_slug": "university" | null,
       "confidence": 0.0-1.0,
-      "reply_ar": "من فين لفين؟"     # only when clarify/unknown
+      "reply_ar": "من فين لفين؟"     # only when clarify / chat / unknown
     }
+
+`chat` covers general questions (working hours, service area, how it works)
+where Gemini should reply as a friendly Wassalny support agent in Egyptian
+Arabic. See `_build_prompt` for the persona + guardrails.
 
 Reliability rules (Decision #4):
   - 3 second hard timeout.
@@ -62,8 +66,11 @@ def _build_prompt(user_message: str, prior: dict | None = None) -> str:
         if prior.get("to"):   parts.append(f"إلى: {prior['to']}")
         prior_line = f"\nمعلومات سابقة من نفس العميل: {'، '.join(parts)}\n"
 
-    return f"""أنت مساعد لتطبيق وصلني بنها للأجرة.
-مهمتك: من كلام العميل، حدد من أين ينطلق ومكان وجهته.
+    return f"""أنت مساعد ودود لتطبيق وصلني بنها للأجرة في مدينة بنها بمصر.
+مهمتك اتنين:
+  ١) لو العميل عايز يحجز رحلة → حدد نقطة الانطلاق والوجهة من كلامه.
+  ٢) لو العميل بيسأل سؤال عام (مواعيد الشغل، منطقة الخدمة، إزاي أحجز، ...) →
+     رد عليه اختصار وباللهجة المصرية زي موظف خدمة عملاء ودود.
 
 المناطق المتاحة (استخدم فقط slug من هذه القائمة):
 {zone_lines}
@@ -71,12 +78,25 @@ def _build_prompt(user_message: str, prior: dict | None = None) -> str:
 رسالة العميل:
 \"\"\"{user_message}\"\"\"
 
-أرجع JSON فقط (بدون أي شرح) بالتنسيق:
-{{"intent": "book_ride" أو "clarify" أو "unknown",
+قواعد الرد الحواري (intent = chat):
+  - رد قصير (جملة أو اتنين على الأكتر).
+  - لا تذكر سعر محدد بالجنيه؛ قل "السعر يعتمد على المسافة".
+  - لا تعد بوقت وصول محدد بالدقايق؛ قل "الكابتن هيتواصل معاك في أقرب وقت".
+  - لو السؤال خارج نطاق وصلني، اعتذر بأدب واقترح إنه يسأل عن الحجز.
+  - ابدأ الرد بإيموجي بسيط لطيف زي 🌟 أو 🚗 أو 🙂 لو مناسب.
+
+أرجع JSON فقط (بدون أي شرح) بالتنسيق التالي:
+{{"intent": "book_ride" أو "clarify" أو "chat" أو "unknown",
   "from_zone_slug": "<slug من القائمة> أو null",
   "to_zone_slug":   "<slug من القائمة> أو null",
   "confidence": رقم من 0.0 إلى 1.0,
-  "reply_ar": "<نص عربي للرد إذا كان intent = clarify أو unknown>"}}
+  "reply_ar": "<نص عربي للرد إذا كان intent = clarify أو chat أو unknown>"}}
+
+قواعد الـ intent:
+  - "book_ride" → العميل عايز يحجز (حتى لو ذكر منطقة واحدة بس).
+  - "clarify"   → العميل بيحاول يحجز بس مفيش معلومات كافية وعايز نسأله سؤال متابعة.
+  - "chat"      → سؤال عام مش متعلق بحجز رحلة دلوقتي.
+  - "unknown"   → مش فاهم قصده أو الرسالة مش واضحة خالص.
 """
 
 

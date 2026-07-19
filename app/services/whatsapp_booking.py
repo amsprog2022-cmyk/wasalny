@@ -7,9 +7,11 @@ Flow:
   1. Reuse or open an AiSession for this wa_id.
   2. Ask Gemini to parse the message (with the session's prior partial state).
   3. Decide:
-     - book_ride + both zones + confidence >= 0.55 → create ride, send booking sticker
+     - book_ride + both zones + confidence >= 0.55 → send "booked" sticker
+       IMMEDIATELY, then create ride, then ack with details
      - book_ride but missing a zone → save partial, ask a follow-up question
-     - clarify → send reply_ar
+     - chat  → send Gemini's conversational reply as a friendly Wassalny agent
+     - clarify → send reply_ar (booking-adjacent follow-up question)
      - unknown / low confidence / error → open admin handoff alert
 """
 from __future__ import annotations
@@ -109,10 +111,30 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
     result = ai_parser.parse_message(message_body, prior=prior)
     session.touch(_ttl_minutes())
 
-    if result.intent == "unknown" or result.confidence < MIN_CONFIDENCE:
+    # True gibberish / API error → human handoff. Low-confidence chat replies
+    # are still worth sending, so we only handoff on `unknown` OR when a
+    # booking-intent parse is under threshold.
+    if result.used_fallback or result.intent == "unknown":
         _open_handoff(
             customer.id, customer.wa_id,
-            reason="low_confidence" if not result.used_fallback else "gemini_error",
+            reason="gemini_error" if result.used_fallback else "unknown_intent",
+            message_body=message_body,
+            session_id=session.id,
+        )
+        return {"handled": True, "action": "handoff", "confidence": result.confidence}
+
+    # Conversational Q&A — Gemini answered as a friendly agent. No session
+    # state to persist and no booking to create; just relay the reply.
+    if result.intent == "chat":
+        if result.reply_ar:
+            _try_send(customer.wa_id, result.reply_ar)
+        return {"handled": True, "action": "chat"}
+
+    # From here on we're in the booking flow — enforce confidence threshold.
+    if result.confidence < MIN_CONFIDENCE:
+        _open_handoff(
+            customer.id, customer.wa_id,
+            reason="low_confidence",
             message_body=message_body,
             session_id=session.id,
         )
@@ -157,6 +179,11 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "handoff"}
 
+    # Immediate acknowledgment BEFORE the slower work — customer sees the
+    # branded sticker within ~1s of their message instead of waiting on
+    # pricing/DB writes/matching.
+    _try_send_sticker(customer.wa_id, "booked")
+
     # Create the ride
     try:
         ride, pending_ids = ride_lifecycle.create_ride(
@@ -174,7 +201,7 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
     session.status = "completed"
     db.session.commit()
 
-    # Ack customer with a booking summary + sticker
+    # Follow-up ack with concrete booking details
     _try_send(
         customer.wa_id,
         f"🚗 تم استلام طلبك!\n"
@@ -183,7 +210,6 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         f"السعر: {float(ride.price_egp):.0f} ج.م\n"
         f"بندور على كابتن قريب…",
     )
-    _try_send_sticker(customer.wa_id, "booked")
 
     # Kick off matching (assign() will send captain_coming sticker on assignment)
     matching.start_matching(ride.id, pending_fee_ids=pending_ids)
