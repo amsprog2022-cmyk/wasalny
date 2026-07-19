@@ -258,6 +258,34 @@ def fcm_readiness():
     })
 
 
+@debug_api_bp.get("/whatsapp-status")
+def whatsapp_status():
+    """Show whether WhatsApp env vars are set on this Railway instance.
+
+    Reveals only presence + last 4 chars of the access token (safe).
+    No secrets exposed.
+    """
+    tok = current_app.config.get("WHATSAPP_ACCESS_TOKEN") or ""
+    phone_id = current_app.config.get("WHATSAPP_PHONE_NUMBER_ID") or ""
+    business_id = current_app.config.get("WHATSAPP_BUSINESS_ACCOUNT_ID") or ""
+    verify = current_app.config.get("WHATSAPP_VERIFY_TOKEN") or ""
+    app_secret = current_app.config.get("WHATSAPP_APP_SECRET") or ""
+
+    return jsonify({
+        "access_token_set": bool(tok),
+        "access_token_length": len(tok),
+        "access_token_last4": tok[-4:] if len(tok) > 8 else None,
+        "phone_number_id_set": bool(phone_id),
+        "phone_number_id": phone_id,
+        "business_account_id_set": bool(business_id),
+        "business_account_id": business_id,
+        "verify_token_set": bool(verify),
+        "app_secret_set": bool(app_secret),
+        "api_version": current_app.config.get("WHATSAPP_API_VERSION"),
+        "ready": all([tok, phone_id, business_id, verify]),
+    })
+
+
 def _next_action(checks, cust_tokens, driv_tokens, debug_tok_set):
     """Give the user one clear thing to do next."""
     for c in checks[:6]:
