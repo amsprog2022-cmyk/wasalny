@@ -225,6 +225,36 @@ def approve(driver_id: int):
     return redirect(url_for("drivers.show", driver_id=driver_id))
 
 
+@drivers_bp.route("/approve-all-pending", methods=["POST"])
+@login_required
+def approve_all_pending():
+    """Bulk-approve every pending captain in one click.
+
+    Each captain already has a Driver row (created by public signup or the
+    admin wizard) with a default password. Approval just flips them to
+    active + approved so they can log in and are forced to change the
+    default password on first login.
+    """
+    if not current_user.is_admin:
+        flash("للأدمن بس.", "error")
+        return redirect(url_for("drivers.index"))
+
+    pending = Driver.query.filter_by(approval_status="pending").all()
+    now = datetime.utcnow()
+    for d in pending:
+        d.approval_status = "approved"
+        d.approved_by_user_id = current_user.id
+        d.approved_at = now
+        d.is_active = True
+    db.session.commit()
+
+    if pending:
+        flash(f"تم قبول {len(pending)} كابتن دفعة واحدة. كلمة السر الافتراضية شغالة لكلهم.", "success")
+    else:
+        flash("مفيش كباتن مستنيين مراجعة.", "info")
+    return redirect(url_for("drivers.index"))
+
+
 @drivers_bp.route("/<int:driver_id>/reject", methods=["POST"])
 @login_required
 def reject(driver_id: int):

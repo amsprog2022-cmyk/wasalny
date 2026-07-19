@@ -18,7 +18,15 @@
   {% if pending_count %}
     <div class="card border border-warning/40 bg-warning/5 mb-4 flex items-center justify-between">
       <p><span class="text-warning font-bold text-lg">{{ pending_count }}</span> <span class="text-white/80">كابتن مستنيين مراجعتك</span></p>
-      <a href="{{ url_for('drivers.index', filter='pending') }}" class="btn-primary" style="padding: 6px 14px; font-size: 12px;">راجعهم دلوقتي</a>
+      <div class="flex gap-2">
+        <a href="{{ url_for('drivers.index', filter='pending') }}" class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">راجعهم دلوقتي</a>
+        <form method="post" action="{{ url_for('drivers.approve_all_pending') }}"
+              onsubmit="return confirm('متأكد إنك عايز تقبل كل الـ {{ pending_count }} كابتن مرة واحدة؟');">
+          <button type="submit" class="btn-primary" style="padding: 6px 14px; font-size: 12px;">
+            ✅ اقبل الكل ({{ pending_count }})
+          </button>
+        </form>
+      </div>
     </div>
   {% endif %}
 
