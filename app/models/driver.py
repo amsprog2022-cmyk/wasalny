@@ -46,6 +46,12 @@ class Driver(db.Model):
     approved_at = db.Column(db.DateTime)
     signup_source = db.Column(db.String(20), default="admin", nullable=False)  # admin / public
 
+    # Firebase Cloud Messaging token — captain app registers it on login so
+    # trip offers can push through when the app is in the background.
+    fcm_token = db.Column(db.Text)
+    fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
+    fcm_updated_at = db.Column(db.DateTime)
+
     # Housekeeping
     status = db.Column(db.String(20), default="offline", nullable=False)  # legacy inbox filter
     is_active = db.Column(db.Boolean, default=True, nullable=False)

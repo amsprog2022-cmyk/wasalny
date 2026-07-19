@@ -145,17 +145,38 @@ def _pick_next_zone(current_ride: Ride, tried: set[int]) -> Optional[Zone]:
 # ---------- offer emission ----------
 
 def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
+    """Ping every captain in the offer set — Socket.IO for foreground apps
+    AND Firebase Cloud Messaging for backgrounded/killed apps."""
     payload = {
         "ride": ride.to_dict(),
         "expires_in_seconds": _accept_window(),
     }
-    for did in driver_ids:
+    id_list = list(driver_ids)
+    for did in id_list:
         socketio.emit(
             "trip_offered",
             payload,
             namespace="/driver",
             room=f"driver:{did}",
         )
+
+    # FCM fan-out (safe no-op if the app is running in foreground OR if the
+    # captain has no fcm_token yet — see push_notifications.send_to_drivers).
+    from app.services import push_notifications as push
+    from_ar = ride.from_zone.name_ar if ride.from_zone else ""
+    to_ar = ride.to_zone.name_ar if ride.to_zone else ""
+    net_egp = float(ride.price_egp) * (1 - float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+    push.send_to_drivers(
+        id_list,
+        title="🔔 رحلة جديدة!",
+        body=f"من {from_ar} إلى {to_ar} · صافي {net_egp:.0f} ج.م",
+        data={
+            "kind": "trip_offered",
+            "ride_id": ride.id,
+            "expires_in_seconds": _accept_window(),
+        },
+        collapse_key=f"ride:{ride.id}",
+    )
 
 
 # ---------- entry point ----------

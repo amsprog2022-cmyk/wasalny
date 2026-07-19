@@ -29,6 +29,7 @@ from app.models.ride import Ride, RideStatusEvent, CustomerPendingFee
 from app.models.zone import Zone
 from app.services import availability as av
 from app.services import pricing as pricing_svc
+from app.services import push_notifications as push
 
 
 # ---------- helpers ----------
@@ -138,6 +139,26 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     _emit_customer(ride, "trip_assigned", {"driver": driver_payload})
     _emit_driver(driver_id, "trip_confirmed", {"ride": ride.to_dict()})
 
+    # Push notifications — arrive even when apps are backgrounded or killed.
+    zone_from = ride.from_zone.name_ar if ride.from_zone else ""
+    zone_to = ride.to_zone.name_ar if ride.to_zone else ""
+    driver_name = driver.name if driver else "الكابتن"
+    car_plate = (driver.car_plate if driver else "") or ""
+    push.send_to_customer(
+        ride.customer_id,
+        title="🚗 كابتن جاي!",
+        body=f"{driver_name} · {car_plate}" if car_plate else driver_name,
+        data={"kind": "trip_assigned", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
+    push.send_to_driver(
+        driver_id,
+        title="✅ رحلة اتوزعت عليك",
+        body=f"{zone_from} ← {zone_to}",
+        data={"kind": "trip_confirmed", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
+
 
 def start(ride: Ride, actor_driver_id: int) -> None:
     if ride.status != "assigned":
@@ -149,6 +170,13 @@ def start(ride: Ride, actor_driver_id: int) -> None:
     _record(ride.id, "started", "driver")
     db.session.commit()
     _emit_customer(ride, "trip_status_changed")
+    push.send_to_customer(
+        ride.customer_id,
+        title="🚦 الرحلة ابتدت",
+        body="رحلة سعيدة!",
+        data={"kind": "trip_started", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
 
 
 def complete(ride: Ride, actor_driver_id: int) -> None:
@@ -177,6 +205,13 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
     db.session.commit()
     _emit_customer(ride, "trip_status_changed")
     _emit_driver(actor_driver_id, "trip_completed_ack", {"ride": ride.to_dict()})
+    push.send_to_customer(
+        ride.customer_id,
+        title="✅ وصلت بأمان",
+        body=f"قيّم رحلتك — {float(ride.price_egp):.0f} ج.م",
+        data={"kind": "trip_completed", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
 
 
 def cancel(ride: Ride, *, actor: str, reason: str) -> None:
@@ -197,6 +232,29 @@ def cancel(ride: Ride, *, actor: str, reason: str) -> None:
     _emit_customer(ride, "trip_cancelled", {"reason": reason})
     if ride.driver_id:
         _emit_driver(ride.driver_id, "trip_cancelled", {"ride": ride.to_dict(), "reason": reason})
+
+    # Human-readable Arabic reason for the push body
+    reason_ar = {
+        "no_driver_available": "معلش، مفيش كباتن متاحين. جرب تاني.",
+        "customer_cancelled": "اتلغت من العميل.",
+        "admin_override": "الإدارة ألغت الرحلة.",
+    }.get(reason, "الرحلة اتلغت.")
+
+    push.send_to_customer(
+        ride.customer_id,
+        title="❌ الرحلة اتلغت",
+        body=reason_ar,
+        data={"kind": "trip_cancelled", "ride_id": ride.id, "reason": reason},
+        collapse_key=f"ride:{ride.id}",
+    )
+    if ride.driver_id:
+        push.send_to_driver(
+            ride.driver_id,
+            title="❌ الرحلة اتلغت",
+            body=reason_ar,
+            data={"kind": "trip_cancelled", "ride_id": ride.id, "reason": reason},
+            collapse_key=f"ride:{ride.id}",
+        )
 
 
 def no_show(ride: Ride, actor_driver_id: int) -> None:
@@ -233,3 +291,10 @@ def no_show(ride: Ride, actor_driver_id: int) -> None:
 
     _emit_customer(ride, "trip_cancelled", {"reason": "customer_no_show"})
     _emit_driver(actor_driver_id, "trip_no_show_ack", {"ride": ride.to_dict()})
+    push.send_to_customer(
+        ride.customer_id,
+        title="⚠️ رحلة اتلغت",
+        body=f"الكابتن حضر وانت ماحضرتش. غرامة {float(_no_show_fee()):.0f} ج.م هتتحسب في رحلتك الجاية.",
+        data={"kind": "trip_no_show", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )

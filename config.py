@@ -41,6 +41,11 @@ class Config:
     MATCHING_MAX_ROUNDS = int(os.getenv("MATCHING_MAX_ROUNDS", "3"))
     CUSTOMER_RATE_LIMIT_PER_10MIN = int(os.getenv("CUSTOMER_RATE_LIMIT_PER_10MIN", "3"))
 
+    # Firebase Cloud Messaging (push notifications)
+    # Full service account JSON — either raw JSON or base64-encoded (recommended for Railway).
+    FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "wasalny-de5bf")
+
     # AI parser (Gemini 2.0 Flash — Decision #19)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")

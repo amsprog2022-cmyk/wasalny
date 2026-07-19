@@ -166,6 +166,7 @@ def driver_discipline():
 @jwt_required()
 def driver_fcm_token():
     """Store the captain's FCM token for background trip-offer push notifications."""
+    from app.services import push_notifications
     did = _driver_id_from_jwt()
     if did is None:
         return jsonify({"error": "driver_token_required"}), 403
@@ -174,8 +175,7 @@ def driver_fcm_token():
     platform = (data.get("platform") or "").strip() or "unknown"
     if not token:
         return jsonify({"error": "token_required"}), 400
-    r = get_redis(current_app.config.get("REDIS_URL"))
-    r.hset(f"driver:{did}:fcm", mapping={"token": token, "platform": platform})
+    push_notifications.register_driver_token(did, token, platform)
     return jsonify({"stored": True})
 
 
@@ -332,20 +332,20 @@ def rides_rate(ride_id: int):
 @rides_api_bp.post("/customer/fcm-token")
 @jwt_required()
 def customer_fcm_token():
-    """Placeholder: store the customer's Firebase Cloud Messaging token so we
-    can push trip updates when the app is in background. Wired to no-op until
-    we have Firebase credentials configured.
+    """Store the customer's FCM token so we can push trip updates when the
+    app is in background/killed. Firebase-Admin sends real messages when
+    FIREBASE_SERVICE_ACCOUNT_JSON is configured on the backend.
     """
+    from app.services import push_notifications
     cid = _customer_id_from_jwt()
     if cid is None:
         return jsonify({"error": "customer_token_required"}), 403
     data = request.json or {}
     token = (data.get("token") or "").strip()
-    platform = (data.get("platform") or "").strip()
+    platform = (data.get("platform") or "").strip() or "unknown"
     if not token:
         return jsonify({"error": "token_required"}), 400
-    r = get_redis(current_app.config.get("REDIS_URL"))
-    r.hset(f"customer:{cid}:fcm", mapping={"token": token, "platform": platform or "unknown"})
+    push_notifications.register_customer_token(cid, token, platform)
     return jsonify({"stored": True})
 
 

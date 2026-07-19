@@ -16,3 +16,4 @@ phonenumbers==8.13.44
 redis==5.0.7
 rq==1.16.2
 fakeredis==2.23.3
+firebase-admin==6.5.0

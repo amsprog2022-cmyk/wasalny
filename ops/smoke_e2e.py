@@ -89,7 +89,7 @@ def main() -> None:
     ok(f"quote → {q['ride_price_egp']} EGP")
 
     # ---- captain login ----
-    r = requests.post(f"{BASE}/api/v1/auth/driver/login", json={"wa_id": "201000000001"})
+    r = requests.post(f"{BASE}/api/v1/auth/driver/login", json={"wa_id": "201000000001", "password": "test-pass"})
     if r.status_code != 200:
         die(f"driver login failed: {r.status_code} {r.text}")
     drv_token = r.json()["access_token"]
