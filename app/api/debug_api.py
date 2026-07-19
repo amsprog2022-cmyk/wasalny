@@ -315,6 +315,86 @@ def whatsapp_send_test():
     })
 
 
+@debug_api_bp.get("/whatsapp-subscribed-apps")
+def whatsapp_subscribed_apps():
+    """Query Meta Graph API for which apps are subscribed to this WABA.
+
+    A silent failure mode: even with Webhooks configured on the app side,
+    if the WhatsApp Business Account doesn't have the app in its
+    subscribed_apps list, Meta drops all incoming messages. Public
+    endpoint (no auth needed) — reveals only public app metadata.
+    """
+    import requests as _r
+    token = current_app.config.get("WHATSAPP_ACCESS_TOKEN") or ""
+    waba = current_app.config.get("WHATSAPP_BUSINESS_ACCOUNT_ID") or ""
+    api_ver = current_app.config.get("WHATSAPP_API_VERSION") or "v25.0"
+
+    if not token or not waba:
+        return jsonify({"error": "missing WHATSAPP_ACCESS_TOKEN or WHATSAPP_BUSINESS_ACCOUNT_ID"}), 500
+
+    url = f"https://graph.facebook.com/{api_ver}/{waba}/subscribed_apps"
+    try:
+        resp = _r.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except _r.RequestException as e:
+        return jsonify({"error": "meta_request_failed", "detail": str(e)[:200]}), 502
+
+    body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {"raw": resp.text[:400]}
+    subscribed_count = len(body.get("data", []))
+    return jsonify({
+        "http_status": resp.status_code,
+        "waba_id": waba,
+        "api_version": api_ver,
+        "subscribed_app_count": subscribed_count,
+        "meta_response": body,
+        "verdict": (
+            "✅ WABA is subscribed to at least one app — incoming messages should forward"
+            if subscribed_count > 0
+            else "❌ WABA has NO subscribed apps — this is why messages vanish. POST /whatsapp-subscribe-app to fix."
+        ),
+    })
+
+
+@debug_api_bp.post("/whatsapp-subscribe-app")
+def whatsapp_subscribe_app():
+    """Subscribe your Meta app to the WABA so it starts receiving webhooks.
+
+    Auth: DEBUG_TOKEN. Only run if /whatsapp-subscribed-apps shows
+    subscribed_app_count = 0. Idempotent (re-subscribing is safe).
+    """
+    if not _require_debug_token():
+        return jsonify({"error": "unauthorized",
+                        "hint": "Set X-Debug-Token header to your DEBUG_TOKEN"}), 401
+
+    import requests as _r
+    token = current_app.config.get("WHATSAPP_ACCESS_TOKEN") or ""
+    waba = current_app.config.get("WHATSAPP_BUSINESS_ACCOUNT_ID") or ""
+    api_ver = current_app.config.get("WHATSAPP_API_VERSION") or "v25.0"
+
+    if not token or not waba:
+        return jsonify({"error": "missing WHATSAPP_ACCESS_TOKEN or WHATSAPP_BUSINESS_ACCOUNT_ID"}), 500
+
+    url = f"https://graph.facebook.com/{api_ver}/{waba}/subscribed_apps"
+    try:
+        resp = _r.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except _r.RequestException as e:
+        return jsonify({"error": "meta_request_failed", "detail": str(e)[:200]}), 502
+
+    body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {"raw": resp.text[:400]}
+    return jsonify({
+        "http_status": resp.status_code,
+        "meta_response": body,
+        "success": body.get("success") is True,
+    })
+
+
 @debug_api_bp.get("/whatsapp-status")
 def whatsapp_status():
     """Show whether WhatsApp env vars are set on this Railway instance.
