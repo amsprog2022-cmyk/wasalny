@@ -1,4 +1,7 @@
 from datetime import datetime
+
+import bcrypt
+
 from app import db
 
 
@@ -12,13 +15,27 @@ class Customer(db.Model):
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
-    # Firebase Cloud Messaging token — set from the customer app on login.
-    # Nullable because we support legacy customers who signed up before FCM was live.
+    # Nullable because legacy customers (registered before we added passwords)
+    # need to be prompted to set one on their next login rather than being locked out.
+    password_hash = db.Column(db.String(255))
+
     fcm_token = db.Column(db.Text)
     fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
     fcm_updated_at = db.Column(db.DateTime)
 
     conversations = db.relationship("Conversation", backref="customer", lazy="dynamic")
+
+    def set_password(self, plain: str) -> None:
+        self.password_hash = bcrypt.hashpw(
+            plain.encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
+
+    def check_password(self, plain: str) -> bool:
+        if not self.password_hash:
+            return False
+        return bcrypt.checkpw(
+            plain.encode("utf-8"), self.password_hash.encode("utf-8")
+        )
 
     def to_dict(self) -> dict:
         return {

@@ -126,7 +126,21 @@ def _apply_lightweight_migrations(app):
                         conn.execute(text(
                             f"ALTER TABLE {table} ADD COLUMN {col} {coltype}"
                         ))
-    print("[migrate] FCM columns ensured on customers + drivers")
+        # Customer password: nullable so legacy accounts are prompted to set
+        # a password on next login rather than being locked out.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE customers ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(customers)")
+            ).fetchall()}
+            if "password_hash" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE customers ADD COLUMN password_hash VARCHAR(255)"
+                ))
+    print("[migrate] FCM columns + customer password_hash ensured")
 
 
 def _init_firebase_admin(app):

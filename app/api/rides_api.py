@@ -351,32 +351,98 @@ def customer_fcm_token():
 
 # ---------- customer auth (Decision #6: phone-only, no OTP) ----------
 
+def _issue_customer_token(customer):
+    return create_access_token(
+        identity=f"customer:{customer.id}",
+        additional_claims={"kind": "customer"},
+    )
+
+
+def _customer_payload(customer, *, needs_password_setup=False):
+    return {
+        "id": customer.id,
+        "wa_id": customer.wa_id,
+        "name": customer.name,
+        "needs_password_setup": needs_password_setup,
+    }
+
+
+@rides_api_bp.post("/customer/register")
+def customer_register():
+    data = request.json or {}
+    wa_id = (data.get("wa_id") or "").strip().lstrip("+")
+    name = (data.get("name") or "").strip() or None
+    password = (data.get("password") or "").strip()
+
+    if not wa_id or not name or not password:
+        return jsonify({"error": "wa_id, name, password required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
+
+    existing = Customer.query.filter_by(wa_id=wa_id).first()
+    if existing is not None:
+        return jsonify({"error": "phone_already_registered"}), 409
+
+    customer = Customer(wa_id=wa_id, name=name)
+    customer.set_password(password)
+    db.session.add(customer)
+    db.session.commit()
+
+    return jsonify({
+        "access_token": _issue_customer_token(customer),
+        "customer": _customer_payload(customer),
+    })
+
+
 @rides_api_bp.post("/customer/login")
 def customer_login():
     data = request.json or {}
     wa_id = (data.get("wa_id") or "").strip().lstrip("+")
+    password = (data.get("password") or "").strip()
+
     if not wa_id:
         return jsonify({"error": "wa_id required"}), 400
-    name = (data.get("name") or "").strip() or None
 
     customer = Customer.query.filter_by(wa_id=wa_id).first()
     if customer is None:
-        customer = Customer(wa_id=wa_id, name=name)
-        db.session.add(customer)
-        db.session.commit()
-    elif name and customer.name != name:
-        customer.name = name
-        db.session.commit()
+        return jsonify({"error": "not_registered"}), 404
 
-    return jsonify(
-        {
-            "access_token": create_access_token(
-                identity=f"customer:{customer.id}",
-                additional_claims={"kind": "customer"},
-            ),
-            "customer": {"id": customer.id, "wa_id": customer.wa_id, "name": customer.name},
-        }
-    )
+    # Legacy account created before we required passwords — issue a token
+    # so the app can prompt the user to set one on the next screen.
+    if not customer.password_hash:
+        return jsonify({
+            "access_token": _issue_customer_token(customer),
+            "customer": _customer_payload(customer, needs_password_setup=True),
+        })
+
+    if not password:
+        return jsonify({"error": "password required"}), 400
+    if not customer.check_password(password):
+        return jsonify({"error": "invalid_credentials"}), 401
+
+    return jsonify({
+        "access_token": _issue_customer_token(customer),
+        "customer": _customer_payload(customer),
+    })
+
+
+@rides_api_bp.post("/customer/set-password")
+@jwt_required()
+def customer_set_password():
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    data = request.json or {}
+    password = (data.get("password") or "").strip()
+    if len(password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
+
+    customer = db.session.get(Customer, cid)
+    if customer is None:
+        return jsonify({"error": "not_found"}), 404
+    customer.set_password(password)
+    db.session.commit()
+    return jsonify({"customer": _customer_payload(customer)})
 
 
 # ---------- public zone list ----------
