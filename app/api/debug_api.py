@@ -258,6 +258,63 @@ def fcm_readiness():
     })
 
 
+@debug_api_bp.post("/whatsapp-send-test")
+def whatsapp_send_test():
+    """Send the 'hello_world' template to a phone via the backend's WhatsApp config.
+
+    Auth: X-Debug-Token header. Body: { "to": "201029188887" }
+    Uses the same access token + phone number ID that's live on Railway,
+    so this tests the full backend integration.
+    """
+    if not _require_debug_token():
+        return jsonify({"error": "unauthorized",
+                        "hint": "Set DEBUG_TOKEN on Railway, then send it as X-Debug-Token header."}), 401
+
+    import requests as _r
+    data = request.json or {}
+    to = (data.get("to") or "").strip().lstrip("+").replace(" ", "")
+    template_name = (data.get("template") or "hello_world").strip()
+    lang = (data.get("language") or "en_US").strip()
+
+    if not to:
+        return jsonify({"error": "'to' is required (e.g. 201029188887)"}), 400
+
+    token = current_app.config.get("WHATSAPP_ACCESS_TOKEN") or ""
+    phone_id = current_app.config.get("WHATSAPP_PHONE_NUMBER_ID") or ""
+    api_ver = current_app.config.get("WHATSAPP_API_VERSION") or "v21.0"
+
+    if not token or not phone_id:
+        return jsonify({"error": "backend not configured (missing token or phone_number_id)"}), 500
+
+    url = f"https://graph.facebook.com/{api_ver}/{phone_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": lang},
+        },
+    }
+    try:
+        resp = _r.post(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+    except _r.RequestException as e:
+        return jsonify({"error": "request_failed", "detail": str(e)[:200]}), 502
+
+    return jsonify({
+        "http_status": resp.status_code,
+        "meta_response": resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:400],
+        "sent_to": to,
+        "template": template_name,
+        "language": lang,
+    })
+
+
 @debug_api_bp.get("/whatsapp-status")
 def whatsapp_status():
     """Show whether WhatsApp env vars are set on this Railway instance.
