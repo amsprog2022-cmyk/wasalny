@@ -315,6 +315,42 @@ def whatsapp_send_test():
     })
 
 
+@debug_api_bp.get("/whatsapp-token-debug")
+def whatsapp_token_debug():
+    """Diagnose the access token — what app owns it, what permissions, what WABAs it can see.
+
+    Runs 3 checks:
+      1. /debug_token — token metadata (app_id, scopes, expiry)
+      2. /me — basic identity
+      3. /{waba_id} — can we read the WABA at all?
+    """
+    import requests as _r
+    token = current_app.config.get("WHATSAPP_ACCESS_TOKEN") or ""
+    waba = current_app.config.get("WHATSAPP_BUSINESS_ACCOUNT_ID") or ""
+    api_ver = current_app.config.get("WHATSAPP_API_VERSION") or "v25.0"
+    if not token:
+        return jsonify({"error": "no token"}), 500
+
+    def _get(url):
+        try:
+            r = _r.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            return {"status": r.status_code, "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text[:300]}
+        except _r.RequestException as e:
+            return {"status": -1, "error": str(e)[:200]}
+
+    debug_token = _get(f"https://graph.facebook.com/{api_ver}/debug_token?input_token={token}")
+    me = _get(f"https://graph.facebook.com/{api_ver}/me")
+    waba_read = _get(f"https://graph.facebook.com/{api_ver}/{waba}?fields=id,name,timezone_id,message_template_namespace")
+
+    return jsonify({
+        "api_version": api_ver,
+        "waba_id_configured": waba,
+        "debug_token": debug_token,
+        "me": me,
+        "waba_read": waba_read,
+    })
+
+
 @debug_api_bp.get("/whatsapp-subscribed-apps")
 def whatsapp_subscribed_apps():
     """Query Meta Graph API for which apps are subscribed to this WABA.
