@@ -25,8 +25,11 @@ from flask import current_app
 from app import db
 from app.models.ai_session import AiSession, AdminAlert
 from app.models.customer import Customer
+from app.models.gemini_call import GeminiCallLog
+from app.models.ride import Ride
 from app.models.zone import Zone
 from app.services import ai_parser
+from app.services import rate_limit
 from app.services import ride_lifecycle
 from app.services import matching
 from app.services import stickers as stickers_svc
@@ -93,23 +96,86 @@ def _open_handoff(customer_id: int, wa_id: str, reason: str, message_body: str, 
     return alert
 
 
+def _load_active_ride_context(customer_id: int) -> dict | None:
+    """Return a dict describing this customer's current in-flight ride so
+    the AI can answer questions about it. Returns None when they have none."""
+    ride = (
+        Ride.query.filter(
+            Ride.customer_id == customer_id,
+            Ride.status.in_(("broadcasting", "assigned", "started")),
+        )
+        .order_by(Ride.created_at.desc())
+        .first()
+    )
+    if ride is None:
+        return None
+    return {
+        "id": ride.id,
+        "status": ride.status,
+        "from_zone_ar": ride.from_zone.name_ar if ride.from_zone else None,
+        "to_zone_ar": ride.to_zone.name_ar if ride.to_zone else None,
+        "price_egp": float(ride.price_egp),
+        "driver_name": ride.driver.name if ride.driver else None,
+    }
+
+
+def _log_gemini_call(
+    customer: Customer, latency_ms: int, result: "ai_parser.ParseResult | None",
+    *, was_rate_limited: bool = False,
+) -> None:
+    """Persist observability row. Best-effort; never crashes the pipeline."""
+    try:
+        row = GeminiCallLog(
+            customer_id=customer.id,
+            wa_id=customer.wa_id,
+            latency_ms=latency_ms,
+            intent=(result.intent if result else "rate_limited"),
+            confidence=(result.confidence if result else None),
+            used_fallback=(result.used_fallback if result else False),
+            was_rate_limited=was_rate_limited,
+        )
+        db.session.add(row)
+        db.session.commit()
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("gemini metric log failed: %s", e)
+
+
 def process_incoming(customer: Customer, message_body: str) -> dict:
     """Main entry point. Returns a small dict summarising what happened.
 
     The webhook returns 200 to Meta regardless — this runs after we've
     persisted the raw inbox message.
     """
+    import time
     if not message_body or not message_body.strip():
         return {"handled": False, "reason": "empty"}
+
+    # Rate-limit per phone — protect Gemini quota from a single abuser.
+    allowed, count = rate_limit.check_gemini_limit(customer.wa_id)
+    if not allowed:
+        current_app.logger.warning(
+            "Gemini rate limit exceeded for %s (count=%d)", customer.wa_id, count
+        )
+        _log_gemini_call(customer, latency_ms=0, result=None, was_rate_limited=True)
+        _try_send(
+            customer.wa_id,
+            "🙏 معلش يا فندم، وصلت للحد الأقصى من الرسائل في الساعة دي. "
+            "استنى شوية وحاول تاني.",
+        )
+        return {"handled": True, "action": "rate_limited"}
 
     session = _get_or_open_session(customer.id, customer.wa_id)
     prior = {
         "from": session.partial_pickup_slug,
         "to": session.partial_dropoff_slug,
     }
+    active_ride = _load_active_ride_context(customer.id)
 
-    result = ai_parser.parse_message(message_body, prior=prior)
+    t0 = time.time()
+    result = ai_parser.parse_message(message_body, prior=prior, active_ride=active_ride)
+    latency_ms = int((time.time() - t0) * 1000)
     session.touch(_ttl_minutes())
+    _log_gemini_call(customer, latency_ms=latency_ms, result=result)
 
     # True gibberish / API error → human handoff. Low-confidence chat replies
     # are still worth sending, so we only handoff on `unknown` OR when a
@@ -122,6 +188,54 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
             session_id=session.id,
         )
         return {"handled": True, "action": "handoff", "confidence": result.confidence}
+
+    # In-trip status question — AI already has ride context and composed a reply.
+    if result.intent == "ride_status":
+        if result.reply_ar:
+            _try_send(customer.wa_id, result.reply_ar)
+        elif active_ride:
+            # Fallback if AI forgot to compose text
+            _try_send(
+                customer.wa_id,
+                f"🚗 حالة رحلتك: {active_ride['status']} من {active_ride['from_zone_ar']} "
+                f"إلى {active_ride['to_zone_ar']}",
+            )
+        return {"handled": True, "action": "ride_status"}
+
+    # Cancel the customer's active ride
+    if result.intent == "cancel_ride":
+        if active_ride is None:
+            _try_send(customer.wa_id, "🙂 مش لاقيلك رحلة نشطة دلوقتي.")
+            return {"handled": True, "action": "cancel_noop"}
+        try:
+            ride = db.session.get(Ride, active_ride["id"])
+            ride_lifecycle.cancel(ride, actor="customer", reason="whatsapp_cancel")
+            _try_send(customer.wa_id, result.reply_ar or "✅ اتلغت الرحلة. سلامات!")
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("cancel via whatsapp failed: %s", e)
+            _open_handoff(customer.id, customer.wa_id, reason="cancel_failed",
+                          message_body=message_body, session_id=session.id)
+        return {"handled": True, "action": "cancel_ride"}
+
+    # File a complaint — creates admin alert + queues Complaint if models exist
+    if result.intent == "complaint":
+        summary = result.complaint_summary or message_body
+        alert = AdminAlert(
+            kind="complaint",
+            payload_json=json.dumps(
+                {
+                    "summary": summary,
+                    "message": message_body,
+                    "ride_id": active_ride["id"] if active_ride else None,
+                },
+                ensure_ascii=False,
+            ),
+            customer_id=customer.id,
+        )
+        db.session.add(alert)
+        db.session.commit()
+        _try_send(customer.wa_id, result.reply_ar or "🙏 آسفين على اللي حصل. الشكوى راحت للإدارة وحد هيرد عليك قريب.")
+        return {"handled": True, "action": "complaint"}
 
     # Conversational Q&A — Gemini answered as a friendly agent. No session
     # state to persist and no booking to create; just relay the reply.

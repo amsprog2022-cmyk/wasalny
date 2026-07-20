@@ -51,6 +51,11 @@ class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
     GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "3"))
+    # Per-phone Gemini call cap so one abuser can't burn the whole quota.
+    # 100/hour = ~1.7/min average — well over any legitimate human pattern.
+    GEMINI_RATE_LIMIT_PER_HOUR = int(
+        os.getenv("GEMINI_RATE_LIMIT_PER_HOUR", "100")
+    )
     AI_SESSION_TTL_MINUTES = int(os.getenv("AI_SESSION_TTL_MINUTES", "30"))
 
     # WhatsApp Cloud API

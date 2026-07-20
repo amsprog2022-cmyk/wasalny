@@ -14,12 +14,18 @@ from app.models.sticker import Sticker
 
 
 STICKERS = [
+    # Same branded PNG covers two moments until distinct art is provided:
+    #   - `booked`         → fired the instant we understand the booking intent
+    #   - `captain_coming` → fired when a captain accepts the offer
+    {
+        "name": "booked_247",
+        "purpose": "booked",
+        "file_path": "stickers/captain_coming.png",
+    },
     {
         "name": "captain_coming_247",
         "purpose": "captain_coming",
         "file_path": "stickers/captain_coming.png",
-        # This is the "24/7 · أقرب كابتن هيكلمك · 01029188887" branded sticker
-        # Ibrahim sent on 2026-07-18. Sent to the customer when a captain accepts.
     },
 ]
 
