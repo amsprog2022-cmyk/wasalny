@@ -50,7 +50,8 @@ class Config:
     # the -latest alias which always follows Google's current fast model.
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-    GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "3"))
+    # 8s covers cold-start + the richer multi-intent prompt. Was 3s pre-upgrade.
+    GEMINI_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "8"))
     # Per-phone Gemini call cap so one abuser can't burn the whole quota.
     # 100/hour = ~1.7/min average — well over any legitimate human pattern.
     GEMINI_RATE_LIMIT_PER_HOUR = int(
