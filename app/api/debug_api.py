@@ -540,6 +540,41 @@ def customer_ai_trace():
         except Exception as e:  # noqa: BLE001
             all_conversations = [{"error": str(e)[:200]}]
 
+    # Find messages whose body matches this phone somehow, by looking at
+    # recent inbound messages containing anything from this wa_id.
+    # Also — most damning — the Message row has wa_message_id which encodes
+    # the sender in WhatsApp's ID format; peek at recent inbound messages
+    # from the last 24h and show their conversation info regardless of link.
+    orphaned_convs = []
+    try:
+        from app.models import Message
+        recent_inbound = (
+            Message.query.filter_by(direction="inbound")
+            .order_by(Message.id.desc()).limit(30).all()
+        )
+        # Get unique conversations they belong to
+        seen = set()
+        for m in recent_inbound:
+            if m.conversation_id in seen:
+                continue
+            seen.add(m.conversation_id)
+            conv = db.session.get(Conversation, m.conversation_id) if Conversation else None
+            if conv is None:
+                continue
+            peer = conv.customer.wa_id if conv.customer else (conv.driver.wa_id if conv.driver else None)
+            if peer and (wa_id in peer or peer in wa_id):
+                orphaned_convs.append({
+                    "conversation_id": conv.id,
+                    "kind": conv.kind,
+                    "customer_id": conv.customer_id,
+                    "driver_id": conv.driver_id,
+                    "peer_wa_id": peer,
+                    "sample_msg_id": m.id,
+                    "sample_msg_body": (m.body or "")[:80],
+                })
+    except Exception as e:  # noqa: BLE001
+        orphaned_convs = [{"error": str(e)[:200]}]
+
     return jsonify({
         "wa_id": wa_id,
         "customer_exists": True,
@@ -555,6 +590,7 @@ def customer_ai_trace():
         },
         "latest_conversation": conv_info,
         "all_conversations_for_this_phone": all_conversations,
+        "orphan_search_by_recent_inbound_msgs": orphaned_convs,
         "latest_ai_sessions": session_info,
         "recent_gemini_calls": call_info,
         "diagnosis_hints": {
