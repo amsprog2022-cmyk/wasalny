@@ -473,18 +473,24 @@ def customer_ai_trace():
     if customer is None:
         return jsonify({"wa_id": wa_id, "customer_exists": False}), 404
 
-    # Latest conversation for this wa_id
+    # Latest conversation for this customer (Conversation joins via customer_id)
     conv_info = None
     if Conversation is not None:
-        conv = Conversation.query.filter_by(wa_id=wa_id).order_by(Conversation.id.desc()).first()
-        if conv:
-            conv_info = {
-                "id": conv.id,
-                "kind": getattr(conv, "kind", None),
-                "customer_id": getattr(conv, "customer_id", None),
-                "driver_id": getattr(conv, "driver_id", None),
-                "created_at": conv.created_at.isoformat() if getattr(conv, "created_at", None) else None,
-            }
+        try:
+            conv = (
+                Conversation.query.filter_by(customer_id=customer.id)
+                .order_by(Conversation.id.desc()).first()
+            )
+            if conv:
+                conv_info = {
+                    "id": conv.id,
+                    "kind": getattr(conv, "kind", None),
+                    "customer_id": getattr(conv, "customer_id", None),
+                    "driver_id": getattr(conv, "driver_id", None),
+                    "created_at": conv.created_at.isoformat() if getattr(conv, "created_at", None) else None,
+                }
+        except Exception as e:  # noqa: BLE001
+            conv_info = {"error": str(e)[:200]}
 
     # Latest AiSession rows
     sessions = (
