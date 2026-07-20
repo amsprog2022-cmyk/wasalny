@@ -254,7 +254,8 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "handoff", "confidence": result.confidence}
 
-    # Merge new partials
+    # Merge new partials — only pickup is required for WhatsApp bookings;
+    # captain sets destination + price on arrival.
     if result.from_zone_slug:
         session.partial_pickup_slug = result.from_zone_slug
     if result.to_zone_slug:
@@ -266,25 +267,15 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
             _try_send(customer.wa_id, result.reply_ar)
         return {"handled": True, "action": "clarify"}
 
-    # intent == book_ride
+    # intent == book_ride — pickup is enough to fire an order.
     pickup = session.partial_pickup_slug
-    dropoff = session.partial_dropoff_slug
-    if not pickup or not dropoff:
+    if not pickup:
         db.session.commit()
-        # Ask the missing side
-        if not pickup and not dropoff:
-            _try_send(customer.wa_id, "أهلاً 🌟 من فين لفين؟ اكتب الحيّين بس.")
-        elif not pickup:
-            _try_send(customer.wa_id, "تمام، وجهتك محفوظة. حضرتك من فين هنعديك؟")
-        else:
-            _try_send(customer.wa_id, "تمام، إحنا هنعديك من هنا. عايز تنزل فين؟")
-        return {"handled": True, "action": "await_partial"}
+        _try_send(customer.wa_id, "أهلاً 🌟 حضرتك دلوقتي فين؟ ابعتلي اسم الحي أو المنطقة عشان نبعتلك كابتن.")
+        return {"handled": True, "action": "await_pickup"}
 
-    # Both zones present — validate they exist
     from_zone = Zone.query.filter_by(slug=pickup, is_active=True).first()
-    to_zone = Zone.query.filter_by(slug=dropoff, is_active=True).first()
-    if not from_zone or not to_zone:
-        # Gemini hallucinated a slug that doesn't exist — handoff to a human.
+    if not from_zone:
         _open_handoff(
             customer.id, customer.wa_id,
             reason="unknown_zone",
@@ -293,39 +284,31 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "handoff"}
 
-    # Immediate acknowledgment BEFORE the slower work — customer sees the
-    # branded sticker within ~1s of their message instead of waiting on
-    # pricing/DB writes/matching.
+    # Fast branded ack before the DB/matching work.
     _try_send_sticker(customer.wa_id, "booked")
 
-    # Create the ride
+    # Create the ride with no destination — captain will set it on arrival.
     try:
         ride, pending_ids = ride_lifecycle.create_ride(
             customer_id=customer.id,
             from_zone_id=from_zone.id,
-            to_zone_id=to_zone.id,
+            to_zone_id=None,
             source="whatsapp",
         )
     except ValueError as e:
-        _try_send(customer.wa_id, "معلش، السعر مش موجود للطريق ده. هنراجعه بسرعة.")
+        _try_send(customer.wa_id, "معلش، حصلت مشكلة صغيرة. هنراجع الطلب بسرعة.")
         _open_handoff(customer.id, customer.wa_id, reason=str(e), message_body=message_body, session_id=session.id)
         return {"handled": True, "action": "handoff"}
 
-    # Mark AI session complete
     session.status = "completed"
     db.session.commit()
 
-    # Follow-up ack with concrete booking details
     _try_send(
         customer.wa_id,
-        f"🚗 تم استلام طلبك!\n"
-        f"من: {from_zone.name_ar}\n"
-        f"إلى: {to_zone.name_ar}\n"
-        f"السعر: {float(ride.price_egp):.0f} ج.م\n"
-        f"بندور على كابتن قريب…",
+        f"🚗 تمام! بندور على كابتن قريب من {from_zone.name_ar}.\n"
+        f"الكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.",
     )
 
-    # Kick off matching (assign() will send captain_coming sticker on assignment)
     matching.start_matching(ride.id, pending_fee_ids=pending_ids)
 
     return {"handled": True, "action": "ride_created", "ride_id": ride.id}

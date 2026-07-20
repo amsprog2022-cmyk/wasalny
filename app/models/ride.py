@@ -24,9 +24,12 @@ class Ride(db.Model):
     driver_id = db.Column(db.Integer, db.ForeignKey("drivers.id"), nullable=True, index=True)
 
     from_zone_id = db.Column(db.Integer, db.ForeignKey("zones.id"), nullable=False)
-    to_zone_id = db.Column(db.Integer, db.ForeignKey("zones.id"), nullable=False)
+    # to_zone_id is nullable because WhatsApp bookings only capture pickup;
+    # the captain sets the destination on arrival. App bookings always set it.
+    to_zone_id = db.Column(db.Integer, db.ForeignKey("zones.id"), nullable=True)
 
-    # Money — computed at create time so the customer sees a locked price.
+    # Money — computed at create time when both zones are known. For WhatsApp
+    # rides this starts as 0 and captain overrides via /rides/<id>/price.
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
     commission_egp = db.Column(db.Numeric(8, 2), nullable=False)
     no_show_fee_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)

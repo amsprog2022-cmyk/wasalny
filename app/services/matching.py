@@ -167,11 +167,18 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
     from app.services import push_notifications as push
     from_ar = ride.from_zone.name_ar if ride.from_zone else ""
     to_ar = ride.to_zone.name_ar if ride.to_zone else ""
-    net_egp = float(ride.price_egp) * (1 - float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+    # WhatsApp bookings start without a destination or price — captain sets
+    # both on arrival. Distinguish the two body copies so captains know what
+    # they're accepting.
+    if ride.to_zone_id is None:
+        body_ar = f"طلب واتساب من {from_ar} · الوجهة والسعر بعد الوصول"
+    else:
+        net_egp = float(ride.price_egp) * (1 - float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+        body_ar = f"من {from_ar} إلى {to_ar} · صافي {net_egp:.0f} ج.م"
     push.send_to_drivers(
         id_list,
         title="🔔 رحلة جديدة!",
-        body=f"من {from_ar} إلى {to_ar} · صافي {net_egp:.0f} ج.م",
+        body=body_ar,
         data={
             "kind": "trip_offered",
             "ride_id": ride.id,

@@ -159,7 +159,19 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE {table} ADD COLUMN deleted_at TIMESTAMP"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at ensured")
+
+        # WhatsApp rides start without a destination — captain sets it on
+        # arrival. Drop the NOT NULL on Postgres. SQLite handles nullable
+        # by default via ALTER anyway; we skip the strict check.
+        if dialect == "postgresql":
+            try:
+                conn.execute(text(
+                    "ALTER TABLE rides ALTER COLUMN to_zone_id DROP NOT NULL"
+                ))
+            except Exception as e:  # noqa: BLE001
+                # Already nullable — Postgres raises when there's nothing to drop.
+                print(f"[migrate] rides.to_zone_id nullable: {e}")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id ensured")
 
 
 def _init_firebase_admin(app):

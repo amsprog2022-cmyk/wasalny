@@ -72,36 +72,52 @@ def create_ride(
     *,
     customer_id: int,
     from_zone_id: int,
-    to_zone_id: int,
+    to_zone_id: int | None = None,
     source: str = "app",
 ) -> tuple[Ride, list[int]]:
-    """Create a `new` ride at the current quoted price.
+    """Create a `new` ride.
+
+    App bookings must specify to_zone_id and get a pre-computed price.
+    WhatsApp bookings can omit to_zone_id — captain sets destination + price
+    on arrival via PATCH /rides/<id>/price with a new to_zone_id.
 
     Returns (ride, pending_fee_ids_that_were_attached).
     """
-    q = pricing_svc.quote(customer_id, from_zone_id, to_zone_id)
-    if q is None:
-        raise ValueError("No pricing for that zone pair.")
+    if to_zone_id is not None:
+        q = pricing_svc.quote(customer_id, from_zone_id, to_zone_id)
+        if q is None:
+            raise ValueError("No pricing for that zone pair.")
+        price = q.ride_price_egp
+        commission = q.commission_egp
+        pending_fees = q.pending_fees_egp
+        pending_fee_ids = q.pending_fee_ids
+        quote_dict = q.to_dict()
+    else:
+        # WhatsApp / captain-priced flow — price gets set on arrival.
+        from decimal import Decimal as _D
+        price = _D("0")
+        commission = _D("0")
+        pending_fees = _D("0")
+        pending_fee_ids = []
+        quote_dict = {"deferred": True}
 
     ride = Ride(
         customer_id=customer_id,
         from_zone_id=from_zone_id,
         to_zone_id=to_zone_id,
-        price_egp=q.ride_price_egp,
-        commission_egp=q.commission_egp,
-        no_show_fee_egp=q.pending_fees_egp,
+        price_egp=price,
+        commission_egp=commission,
+        no_show_fee_egp=pending_fees,
         status="new",
         source=source,
     )
     db.session.add(ride)
-    db.session.flush()   # need ride.id for the audit row + fee application
-    _record(ride.id, "created", "customer", {"quote": q.to_dict(), "source": source})
-    # Attach the pending fees to THIS ride immediately. Semantics:
-    # the fee is now carried by this ride's record and won't reappear on the
-    # customer's next quote — even if this ride is cancelled or never assigned.
-    pricing_svc.apply_pending_fees(ride.id, q.pending_fee_ids)
+    db.session.flush()
+    _record(ride.id, "created", "customer", {"quote": quote_dict, "source": source})
+    if pending_fee_ids:
+        pricing_svc.apply_pending_fees(ride.id, pending_fee_ids)
     db.session.commit()
-    return ride, q.pending_fee_ids
+    return ride, pending_fee_ids
 
 
 def mark_broadcasting(ride: Ride) -> None:

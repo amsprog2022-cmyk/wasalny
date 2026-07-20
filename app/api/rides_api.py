@@ -711,13 +711,13 @@ def rides_complete(ride_id: int):
 @rides_api_bp.patch("/rides/<int:ride_id>/price")
 @jwt_required()
 def rides_update_price(ride_id: int):
-    """Captain silently overrides the ride price mid-trip.
+    """Captain sets or overrides the ride price mid-trip.
 
-    Use case: customer doesn't have exact change / negotiates on-the-spot.
-    Only the driver assigned to the ride can call this, and only while the
-    trip is assigned or started (not after completion). Broadcasts a
-    `ride_price_updated` socket event to the customer so their app shows
-    the new price without needing a reload.
+    Also accepts an optional `to_zone_id` — used for WhatsApp bookings that
+    started without a destination. Once the captain arrives at pickup they
+    fill both in one call. Only the assigned driver can call this, and only
+    while the trip is assigned or started (not after completion). Emits a
+    `ride_price_updated` socket event to the customer.
     """
     did = _driver_id_from_jwt()
     if did is None:
@@ -738,9 +738,25 @@ def rides_update_price(ride_id: int):
     if new_price <= 0 or new_price > 10000:
         return jsonify({"error": "price out of range (0, 10000)"}), 400
 
+    # Optional: set destination too (WhatsApp bookings start without one).
+    new_to_zone_id = data.get("to_zone_id")
+    if new_to_zone_id is not None:
+        try:
+            new_to_zone_id = int(new_to_zone_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "to_zone_id must be an int"}), 400
+        target_zone = db.session.get(Zone, new_to_zone_id)
+        if target_zone is None or not target_zone.is_active:
+            return jsonify({"error": "unknown_zone"}), 400
+        ride.to_zone_id = new_to_zone_id
+
     from decimal import Decimal
     old_price = float(ride.price_egp)
     ride.price_egp = Decimal(f"{new_price:.2f}")
+
+    # Recompute commission from the platform rate now that we have a real price.
+    rate = Decimal(str(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+    ride.commission_egp = (Decimal(f"{new_price:.2f}") * rate).quantize(Decimal("0.01"))
     db.session.commit()
 
     # Notify customer in real time
