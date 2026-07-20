@@ -4,14 +4,50 @@
 <div class="h-full flex">
 
   <!-- Conversation list -->
-  <aside class="w-80 border-r bg-white flex flex-col">
-    <div class="p-3 border-b flex gap-2 text-sm">
-      <a href="{{ url_for('inbox.index', kind='all') }}"
-         class="px-3 py-1 rounded {% if active_kind == 'all' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">All</a>
-      <a href="{{ url_for('inbox.index', kind='customer') }}"
-         class="px-3 py-1 rounded {% if active_kind == 'customer' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">Customers</a>
-      <a href="{{ url_for('inbox.index', kind='driver') }}"
-         class="px-3 py-1 rounded {% if active_kind == 'driver' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">Captains</a>
+  <aside class="w-96 border-r bg-white flex flex-col">
+    <!-- Search + filter chips -->
+    <div class="p-3 border-b space-y-2">
+      <form method="get" action="{{ url_for('inbox.index') }}" class="flex gap-2">
+        <input type="hidden" name="kind" value="{{ active_kind }}"/>
+        {% if unread_only %}<input type="hidden" name="unread" value="1"/>{% endif %}
+        {% if date_filter %}<input type="hidden" name="date" value="{{ date_filter }}"/>{% endif %}
+        <input name="q" value="{{ q }}" placeholder="ابحث بالاسم أو الرقم أو نص الرسالة…"
+               class="flex-1 border rounded px-2 py-1 text-sm" dir="rtl"/>
+        <button type="submit" class="bg-slate-900 text-white px-3 py-1 rounded text-sm">ابحث</button>
+      </form>
+
+      <div class="flex gap-1 text-xs flex-wrap">
+        <a href="{{ url_for('inbox.index', kind='all', q=q, unread=1 if unread_only else None, date=date_filter or None) }}"
+           class="px-2 py-1 rounded {% if active_kind == 'all' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">
+           All ({{ totals.all }})</a>
+        <a href="{{ url_for('inbox.index', kind='customer', q=q, unread=1 if unread_only else None, date=date_filter or None) }}"
+           class="px-2 py-1 rounded {% if active_kind == 'customer' %}bg-sky-600 text-white{% else %}bg-sky-100 text-sky-800{% endif %}">
+           عملاء ({{ totals.customer }})</a>
+        <a href="{{ url_for('inbox.index', kind='driver', q=q, unread=1 if unread_only else None, date=date_filter or None) }}"
+           class="px-2 py-1 rounded {% if active_kind == 'driver' %}bg-amber-600 text-white{% else %}bg-amber-100 text-amber-800{% endif %}">
+           كباتن ({{ totals.driver }})</a>
+        <a href="{{ url_for('inbox.index', kind=active_kind, q=q, unread=None if unread_only else 1, date=date_filter or None) }}"
+           class="px-2 py-1 rounded {% if unread_only %}bg-emerald-600 text-white{% else %}bg-emerald-100 text-emerald-800{% endif %}">
+           {% if unread_only %}✓ {% endif %}مش مقروء ({{ totals.unread }})</a>
+      </div>
+
+      <div class="flex gap-1 text-xs">
+        <a href="{{ url_for('inbox.index', kind=active_kind, q=q, unread=1 if unread_only else None) }}"
+           class="px-2 py-0.5 rounded {% if date_filter == '' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">كل الأوقات</a>
+        <a href="{{ url_for('inbox.index', kind=active_kind, q=q, unread=1 if unread_only else None, date='today') }}"
+           class="px-2 py-0.5 rounded {% if date_filter == 'today' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">النهاردة</a>
+        <a href="{{ url_for('inbox.index', kind=active_kind, q=q, unread=1 if unread_only else None, date='week') }}"
+           class="px-2 py-0.5 rounded {% if date_filter == 'week' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">أسبوع</a>
+        <a href="{{ url_for('inbox.index', kind=active_kind, q=q, unread=1 if unread_only else None, date='month') }}"
+           class="px-2 py-0.5 rounded {% if date_filter == 'month' %}bg-slate-900 text-white{% else %}bg-slate-100{% endif %}">شهر</a>
+      </div>
+
+      {% if q or unread_only or date_filter %}
+        <div class="text-xs text-slate-500 pt-1">
+          نتايج البحث: {{ conversations|length }}
+          <a href="{{ url_for('inbox.index') }}" class="text-red-600 mr-2">✕ امسح</a>
+        </div>
+      {% endif %}
     </div>
 
     <div id="conv-list" class="overflow-y-auto flex-1">
