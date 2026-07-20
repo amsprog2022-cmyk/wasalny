@@ -147,8 +147,10 @@ def _pick_next_zone(current_ride: Ride, tried: set[int]) -> Optional[Zone]:
 def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
     """Ping every captain in the offer set — Socket.IO for foreground apps
     AND Firebase Cloud Messaging for backgrounded/killed apps."""
+    # Include customer contact so the trip-offer screen can show name +
+    # tap-to-call button before the captain even accepts.
     payload = {
-        "ride": ride.to_dict(),
+        "ride": ride.to_dict(include_customer_contact=True),
         "expires_in_seconds": _accept_window(),
     }
     id_list = list(driver_ids)

@@ -582,7 +582,9 @@ def rides_read(ride_id: int):
         pass
     else:
         return jsonify({"error": "forbidden"}), 403
-    payload = ride.to_dict()
+    # When the caller IS the assigned driver, expose the customer's phone
+    # so the captain app can render a tap-to-call button.
+    payload = ride.to_dict(include_customer_contact=(did is not None and ride.driver_id == did))
     if ride.driver_id:
         d = db.session.get(Driver, ride.driver_id)
         payload["driver"] = d.to_dict() if d else None
@@ -605,7 +607,7 @@ def rides_cancel(ride_id: int):
         ride_lifecycle.cancel(ride, actor="customer", reason=reason)
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
-    return jsonify(ride.to_dict())
+    return jsonify(ride.to_dict(include_customer_contact=True))
 
 
 # ---------- captain: accept / start / complete / no_show ----------
@@ -641,7 +643,7 @@ def rides_start(ride_id: int):
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
-    return jsonify(ride.to_dict())
+    return jsonify(ride.to_dict(include_customer_contact=True))
 
 
 @rides_api_bp.post("/rides/<int:ride_id>/complete")
@@ -659,7 +661,69 @@ def rides_complete(ride_id: int):
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
-    return jsonify(ride.to_dict())
+    return jsonify(ride.to_dict(include_customer_contact=True))
+
+
+@rides_api_bp.patch("/rides/<int:ride_id>/price")
+@jwt_required()
+def rides_update_price(ride_id: int):
+    """Captain silently overrides the ride price mid-trip.
+
+    Use case: customer doesn't have exact change / negotiates on-the-spot.
+    Only the driver assigned to the ride can call this, and only while the
+    trip is assigned or started (not after completion). Broadcasts a
+    `ride_price_updated` socket event to the customer so their app shows
+    the new price without needing a reload.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status not in ("assigned", "started"):
+        return jsonify({"error": "cannot_edit_after_completion"}), 409
+
+    data = request.json or {}
+    try:
+        new_price = float(data.get("price_egp"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "price_egp must be a number"}), 400
+    if new_price <= 0 or new_price > 10000:
+        return jsonify({"error": "price out of range (0, 10000)"}), 400
+
+    from decimal import Decimal
+    old_price = float(ride.price_egp)
+    ride.price_egp = Decimal(f"{new_price:.2f}")
+    db.session.commit()
+
+    # Notify customer in real time
+    try:
+        from app import socketio
+        socketio.emit(
+            "ride_price_updated",
+            {"ride_id": ride.id, "old_price_egp": old_price, "new_price_egp": new_price},
+            namespace="/customer",
+            room=f"customer:{ride.customer_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("price update socket emit failed: %s", e)
+
+    # Also send push so the customer sees it if the app is backgrounded
+    try:
+        from app.services import push_notifications as push
+        push.send_to_customer(
+            ride.customer_id,
+            title="السعر اتعدل",
+            body=f"الكابتن عدّل سعر الرحلة إلى {new_price:.0f} ج.م",
+            data={"kind": "price_updated", "ride_id": ride.id, "price_egp": new_price},
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("price update push failed: %s", e)
+
+    return jsonify(ride.to_dict(include_customer_contact=True))
 
 
 @rides_api_bp.post("/rides/<int:ride_id>/sos")
@@ -799,4 +863,4 @@ def rides_no_show(ride_id: int):
         return jsonify({"error": str(e)}), 403
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
-    return jsonify(ride.to_dict())
+    return jsonify(ride.to_dict(include_customer_contact=True))

@@ -49,8 +49,15 @@ class Ride(db.Model):
     from_zone = db.relationship("Zone", foreign_keys=[from_zone_id])
     to_zone = db.relationship("Zone", foreign_keys=[to_zone_id])
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, *, include_customer_contact: bool = False) -> dict:
+        """Serialize the ride.
+
+        `include_customer_contact` — when True, expose the customer's name and
+        phone so the captain app can display + tap-to-call. Only pass True in
+        endpoints that are authenticated as the driver assigned to this ride
+        (or an admin), never in customer-facing responses.
+        """
+        data = {
             "id": self.id,
             "customer_id": self.customer_id,
             "driver_id": self.driver_id,
@@ -70,6 +77,13 @@ class Ride(db.Model):
             "cancel_reason": self.cancel_reason,
             "rating": self.rating,
         }
+        if include_customer_contact and self.customer is not None:
+            data["customer"] = {
+                "id": self.customer.id,
+                "name": self.customer.name or self.customer.wa_id,
+                "wa_id": self.customer.wa_id,   # phone in international format
+            }
+        return data
 
 
 class Broadcast(db.Model):
