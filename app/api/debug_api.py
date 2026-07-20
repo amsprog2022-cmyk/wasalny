@@ -449,6 +449,86 @@ def whatsapp_subscribe_app():
     })
 
 
+@debug_api_bp.get("/customer-ai-trace")
+def customer_ai_trace():
+    """Diagnose why the AI is/isn't responding to a specific customer.
+
+    Query params:  ?wa_id=201012818977
+    Returns customer row, latest conversation, latest AiSession, latest
+    Gemini call logs so we can see exactly which link in the chain broke.
+    """
+    from app.models.ai_session import AiSession
+    from app.models.customer import Customer
+    from app.models.gemini_call import GeminiCallLog
+    try:
+        from app.models.conversation import Conversation
+    except Exception:  # noqa: BLE001
+        Conversation = None
+
+    wa_id = (request.args.get("wa_id") or "").strip().lstrip("+")
+    if not wa_id:
+        return jsonify({"error": "wa_id query param required"}), 400
+
+    customer = Customer.query.filter_by(wa_id=wa_id).first()
+    if customer is None:
+        return jsonify({"wa_id": wa_id, "customer_exists": False}), 404
+
+    # Latest conversation for this wa_id
+    conv_info = None
+    if Conversation is not None:
+        conv = Conversation.query.filter_by(wa_id=wa_id).order_by(Conversation.id.desc()).first()
+        if conv:
+            conv_info = {
+                "id": conv.id,
+                "kind": getattr(conv, "kind", None),
+                "customer_id": getattr(conv, "customer_id", None),
+                "driver_id": getattr(conv, "driver_id", None),
+                "created_at": conv.created_at.isoformat() if getattr(conv, "created_at", None) else None,
+            }
+
+    # Latest AiSession rows
+    sessions = (
+        AiSession.query.filter_by(customer_id=customer.id)
+        .order_by(AiSession.id.desc()).limit(5).all()
+    )
+    session_info = [
+        {
+            "id": s.id, "status": s.status,
+            "partial_pickup": s.partial_pickup_slug,
+            "partial_dropoff": s.partial_dropoff_slug,
+            "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+        }
+        for s in sessions
+    ]
+
+    # Latest Gemini call logs
+    calls = (
+        GeminiCallLog.query.filter_by(wa_id=wa_id)
+        .order_by(GeminiCallLog.id.desc()).limit(10).all()
+    )
+    call_info = [c.to_dict() for c in calls]
+
+    return jsonify({
+        "wa_id": wa_id,
+        "customer_exists": True,
+        "customer": {
+            "id": customer.id,
+            "name": customer.name,
+            "deleted_at": customer.deleted_at.isoformat() if customer.deleted_at else None,
+        },
+        "latest_conversation": conv_info,
+        "latest_ai_sessions": session_info,
+        "recent_gemini_calls": call_info,
+        "diagnosis_hints": {
+            "no_conversation":     conv_info is None,
+            "wrong_conversation_kind": conv_info is not None and conv_info.get("kind") != "customer",
+            "no_gemini_calls_ever": len(call_info) == 0,
+            "all_calls_rate_limited": len(call_info) > 0 and all(c.get("was_rate_limited") for c in call_info),
+            "all_calls_fallback": len(call_info) > 0 and all(c.get("used_fallback") for c in call_info),
+        },
+    })
+
+
 @debug_api_bp.get("/gemini-status")
 def gemini_status():
     """Report Gemini config + do a live one-shot round-trip test.
