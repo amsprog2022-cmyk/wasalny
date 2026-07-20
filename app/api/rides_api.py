@@ -628,6 +628,25 @@ def rides_accept(ride_id: int):
     return jsonify({"claimed": False, "error": "already_taken"}), 409
 
 
+@rides_api_bp.post("/rides/<int:ride_id>/arrived")
+@jwt_required()
+def rides_arrived(ride_id: int):
+    """Captain has arrived at the pickup location — notify customer."""
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    try:
+        ride_lifecycle.arrived(ride, did)
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 409
+    return jsonify(ride.to_dict(include_customer_contact=True))
+
+
 @rides_api_bp.post("/rides/<int:ride_id>/start")
 @jwt_required()
 def rides_start(ride_id: int):

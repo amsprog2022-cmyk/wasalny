@@ -160,6 +160,35 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     )
 
 
+def arrived(ride: Ride, actor_driver_id: int) -> None:
+    """Captain has reached the pickup location — notify customer.
+
+    Doesn't change ride status (stays 'assigned') because the trip hasn't
+    actually started yet — customer still needs to get in the car. This just
+    fires a socket + push notification so the customer knows to come out.
+    """
+    if ride.status != "assigned":
+        raise ValueError(f"Cannot mark arrived on ride in status '{ride.status}'.")
+    if ride.driver_id != actor_driver_id:
+        raise PermissionError("Only the assigned captain can mark arrived.")
+
+    _record(ride.id, "arrived", "driver")
+    db.session.commit()
+
+    _emit_customer(ride, "captain_arrived", {"ride": ride.to_dict()})
+
+    driver = db.session.get(Driver, actor_driver_id)
+    driver_name = driver.name if driver else "الكابتن"
+    car_plate = (driver.car_plate if driver else "") or ""
+    push.send_to_customer(
+        ride.customer_id,
+        title="🚗 الكابتن وصل!",
+        body=f"{driver_name} · {car_plate} — انزل ياكابتن" if car_plate else f"{driver_name} — الكابتن مستنيك",
+        data={"kind": "captain_arrived", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
+
+
 def start(ride: Ride, actor_driver_id: int) -> None:
     if ride.status != "assigned":
         raise ValueError(f"Cannot start a ride in status '{ride.status}'.")
