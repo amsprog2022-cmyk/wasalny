@@ -745,6 +745,124 @@ def rides_update_price(ride_id: int):
     return jsonify(ride.to_dict(include_customer_contact=True))
 
 
+@rides_api_bp.get("/rides/<int:ride_id>/messages")
+@jwt_required()
+def rides_list_messages(ride_id: int):
+    """List trip chat messages. Marks all as read for the caller in one shot."""
+    from datetime import datetime as _dt
+    from app.models.trip_chat import TripChatMessage
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    cid = _customer_id_from_jwt()
+    did = _driver_id_from_jwt()
+    is_customer = cid is not None and ride.customer_id == cid
+    is_driver = did is not None and ride.driver_id == did
+    if not (is_customer or is_driver):
+        return jsonify({"error": "forbidden"}), 403
+
+    since_id = request.args.get("since", type=int)
+    q = TripChatMessage.query.filter_by(ride_id=ride_id)
+    if since_id:
+        q = q.filter(TripChatMessage.id > since_id)
+    messages = q.order_by(TripChatMessage.id.asc()).limit(200).all()
+
+    # Mark messages from the OTHER side as read (best-effort; not per-message)
+    now = _dt.utcnow()
+    if is_customer:
+        for m in messages:
+            if m.sender_kind == "driver" and m.read_by_customer_at is None:
+                m.read_by_customer_at = now
+    else:
+        for m in messages:
+            if m.sender_kind == "customer" and m.read_by_driver_at is None:
+                m.read_by_driver_at = now
+    db.session.commit()
+
+    return jsonify({"messages": [m.to_dict() for m in messages]})
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/messages")
+@jwt_required()
+def rides_send_message(ride_id: int):
+    """Customer or driver sends a chat message within an active ride."""
+    from app.models.trip_chat import TripChatMessage
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    cid = _customer_id_from_jwt()
+    did = _driver_id_from_jwt()
+    if cid is not None and ride.customer_id == cid:
+        sender_kind = "customer"
+        sender_id = cid
+    elif did is not None and ride.driver_id == did:
+        sender_kind = "driver"
+        sender_id = did
+    else:
+        return jsonify({"error": "forbidden"}), 403
+
+    # Only allow chat during active statuses — no cold messages before broadcast
+    # or after complete/cancel.
+    if ride.status not in ("assigned", "started"):
+        return jsonify({"error": "chat_only_during_active_ride"}), 409
+
+    body = ((request.json or {}).get("body") or "").strip()
+    if not body:
+        return jsonify({"error": "body required"}), 400
+    if len(body) > 500:
+        return jsonify({"error": "body too long (max 500)"}), 400
+
+    msg = TripChatMessage(
+        ride_id=ride_id,
+        sender_kind=sender_kind,
+        sender_id=sender_id,
+        body=body,
+    )
+    db.session.add(msg)
+    db.session.commit()
+
+    payload = {"ride_id": ride_id, "message": msg.to_dict()}
+
+    # Fan out via Socket.IO — recipient gets real-time delivery
+    from app import socketio
+    try:
+        if sender_kind == "customer" and ride.driver_id:
+            socketio.emit("chat_message_new", payload,
+                          namespace="/driver", room=f"driver:{ride.driver_id}")
+        elif sender_kind == "driver":
+            socketio.emit("chat_message_new", payload,
+                          namespace="/customer", room=f"customer:{ride.customer_id}")
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("chat socket emit failed: %s", e)
+
+    # Push notification for backgrounded apps
+    try:
+        from app.services import push_notifications as push
+        preview = body[:80]
+        if sender_kind == "customer" and ride.driver_id:
+            customer_name = ride.customer.name if ride.customer else "العميل"
+            push.send_to_driver(
+                ride.driver_id,
+                title=f"💬 {customer_name}",
+                body=preview,
+                data={"kind": "chat_message_new", "ride_id": ride_id},
+                collapse_key=f"chat:{ride_id}",
+            )
+        elif sender_kind == "driver":
+            driver_name = ride.driver.name if ride.driver else "الكابتن"
+            push.send_to_customer(
+                ride.customer_id,
+                title=f"💬 {driver_name}",
+                body=preview,
+                data={"kind": "chat_message_new", "ride_id": ride_id},
+                collapse_key=f"chat:{ride_id}",
+            )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("chat push failed: %s", e)
+
+    return jsonify(msg.to_dict()), 201
+
+
 @rides_api_bp.post("/rides/<int:ride_id>/sos")
 @jwt_required()
 def rides_sos(ride_id: int):

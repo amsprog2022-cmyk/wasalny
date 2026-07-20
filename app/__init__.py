@@ -86,6 +86,7 @@ def create_app(config_class=Config):
 
     # Import all models so db.create_all() sees them
     from app.models import gemini_call as _gc  # noqa: F401
+    from app.models import trip_chat as _tc    # noqa: F401
 
     with app.app_context():
         db.create_all()
