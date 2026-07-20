@@ -102,6 +102,31 @@ def driver_change_password():
     return jsonify({"changed": True})
 
 
+@rides_api_bp.get("/driver/active-ride")
+@jwt_required()
+def driver_active_ride():
+    """Return the captain's current in-flight ride, if any.
+
+    Used by the app on cold-start to recover state when the captain force-quit
+    mid-trip and reopens — otherwise the home screen shows nothing and the
+    trip appears lost. Server truth beats local state.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = (
+        Ride.query.filter(
+            Ride.driver_id == did,
+            Ride.status.in_(("assigned", "started")),
+        )
+        .order_by(Ride.id.desc())
+        .first()
+    )
+    if ride is None:
+        return jsonify({"ride": None})
+    return jsonify({"ride": ride.to_dict(include_customer_contact=True)})
+
+
 @rides_api_bp.get("/driver/earnings")
 @jwt_required()
 def driver_earnings():
