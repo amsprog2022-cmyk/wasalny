@@ -469,9 +469,14 @@ def customer_ai_trace():
     if not wa_id:
         return jsonify({"error": "wa_id query param required"}), 400
 
-    customer = Customer.query.filter_by(wa_id=wa_id).first()
+    # Look for ALL customer rows matching the wa_id in various common formats.
+    variants = list({wa_id, wa_id.lstrip("+"), f"+{wa_id}",
+                     wa_id[2:] if wa_id.startswith("20") else wa_id})
+    all_customers = Customer.query.filter(Customer.wa_id.in_(variants)).all()
+    customer = all_customers[0] if all_customers else None
     if customer is None:
-        return jsonify({"wa_id": wa_id, "customer_exists": False}), 404
+        return jsonify({"wa_id": wa_id, "customer_exists": False,
+                        "checked_variants": variants}), 404
 
     # Latest conversation for this customer (Conversation joins via customer_id)
     conv_info = None
@@ -514,15 +519,42 @@ def customer_ai_trace():
     )
     call_info = [c.to_dict() for c in calls]
 
+    # Also list ALL conversations that touch this phone, even if not linked to
+    # this specific customer_id — useful when there are duplicate customer rows.
+    all_conversations = []
+    if Conversation is not None:
+        try:
+            other_convs = (
+                Conversation.query.filter(
+                    Conversation.customer_id.in_([c.id for c in all_customers])
+                ).order_by(Conversation.id.desc()).limit(10).all()
+            )
+            all_conversations = [
+                {
+                    "id": c.id, "kind": c.kind, "customer_id": c.customer_id,
+                    "driver_id": c.driver_id,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                }
+                for c in other_convs
+            ]
+        except Exception as e:  # noqa: BLE001
+            all_conversations = [{"error": str(e)[:200]}]
+
     return jsonify({
         "wa_id": wa_id,
         "customer_exists": True,
+        "all_matching_customers": [
+            {"id": c.id, "wa_id": c.wa_id, "name": c.name,
+             "deleted_at": c.deleted_at.isoformat() if c.deleted_at else None}
+            for c in all_customers
+        ],
         "customer": {
             "id": customer.id,
             "name": customer.name,
             "deleted_at": customer.deleted_at.isoformat() if customer.deleted_at else None,
         },
         "latest_conversation": conv_info,
+        "all_conversations_for_this_phone": all_conversations,
         "latest_ai_sessions": session_info,
         "recent_gemini_calls": call_info,
         "diagnosis_hints": {
