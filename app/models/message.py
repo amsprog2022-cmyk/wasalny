@@ -4,7 +4,7 @@ from app import db
 
 DIRECTIONS = ("inbound", "outbound")
 STATUSES = ("pending", "sent", "delivered", "read", "failed")
-MSG_TYPES = ("text", "template", "image", "audio", "video", "document", "location")
+MSG_TYPES = ("text", "template", "image", "audio", "video", "document", "location", "sticker")
 
 
 class Message(db.Model):

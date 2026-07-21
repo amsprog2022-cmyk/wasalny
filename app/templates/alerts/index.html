@@ -34,8 +34,13 @@
               </td>
               <td class="px-4 py-3 text-text-muted">{{ p.get('reason', '—') }}</td>
               <td class="px-4 py-3 text-left whitespace-nowrap">
+                <button type="button" class="btn-primary"
+                        style="padding: 6px 14px; font-size: 12px;"
+                        onclick="openAssignModal({{ a.id }}, {{ (customers.get(a.customer_id).name or customers.get(a.customer_id).wa_id) | default('عميل') | tojson }}, {{ (p.get('partial_pickup_slug') or '') | tojson }}, {{ (p.get('partial_dropoff_slug') or '') | tojson }})">
+                  اسند لكابتن
+                </button>
                 <form method="post" action="{{ url_for('alerts.take_over', alert_id=a.id) }}" class="inline">
-                  <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">استلم</button>
+                  <button class="btn-ghost" style="padding: 6px 10px; font-size: 12px;">استلم</button>
                 </form>
                 <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
                   <button class="text-text-muted hover:text-primary text-xs px-2">تجاهل</button>
@@ -84,4 +89,157 @@
     </div>
   </section>
 </div>
+
+<!-- Assign-to-captain modal -->
+<div id="assignModal" class="fixed inset-0 hidden bg-black/70 z-50 items-center justify-center p-4" style="align-items:center;">
+  <div class="card p-6 w-full max-w-lg space-y-4" onclick="event.stopPropagation()">
+    <h3 class="font-bold text-lg" id="assignCustomer">اسند رحلة لكابتن</h3>
+
+    <div>
+      <label class="block text-xs text-text-muted mb-1">مكان الاستلام</label>
+      <select id="assignFrom" class="w-full bg-surface-raised p-2 rounded"></select>
+    </div>
+
+    <div>
+      <label class="block text-xs text-text-muted mb-1">الوجهة</label>
+      <select id="assignTo" class="w-full bg-surface-raised p-2 rounded">
+        <option value="">— لسه محدد — الكابتن هيحدد على الأرض —</option>
+      </select>
+    </div>
+
+    <div id="assignPriceWrap">
+      <label class="block text-xs text-text-muted mb-1">السعر (لما الوجهة مش محددة)</label>
+      <input id="assignPrice" type="number" min="0" step="1" placeholder="مثلاً 25" class="w-full bg-surface-raised p-2 rounded">
+      <div class="text-xs text-text-muted mt-1">اتركه فارغ لو الكابتن هيتفق مع العميل.</div>
+    </div>
+
+    <div>
+      <label class="block text-xs text-text-muted mb-1">الكابتن</label>
+      <select id="assignDriver" class="w-full bg-surface-raised p-2 rounded"></select>
+      <div id="assignDriverEmpty" class="text-xs text-danger mt-1 hidden">مفيش كباتن أونلاين حالياً.</div>
+    </div>
+
+    <div class="flex justify-end gap-2 pt-2">
+      <button type="button" class="btn-ghost" onclick="closeAssignModal()">إلغاء</button>
+      <button type="button" class="btn-primary" id="assignSubmit" onclick="submitAssign()">أرسل الرحلة</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let _alertId = null;
+  let _zones = [];
+
+  function _findZoneIdBySlug(slug) {
+    if (!slug) return '';
+    const z = _zones.find(z => z.slug === slug);
+    return z ? z.id : '';
+  }
+
+  async function openAssignModal(alertId, customerName, pickupSlug, dropoffSlug) {
+    _alertId = alertId;
+    document.getElementById('assignCustomer').textContent = 'اسند رحلة لـ ' + customerName;
+    document.getElementById('assignPrice').value = '';
+
+    // Load zones (cache after first load).
+    if (_zones.length === 0) {
+      const r = await fetch("{{ url_for('alerts.api_zones') }}");
+      _zones = await r.json();
+      const fromSel = document.getElementById('assignFrom');
+      const toSel = document.getElementById('assignTo');
+      fromSel.innerHTML = '';
+      // Rebuild toSel keeping the null option first.
+      toSel.innerHTML = '<option value="">— لسه محدد — الكابتن هيحدد على الأرض —</option>';
+      _zones.forEach(z => {
+        fromSel.insertAdjacentHTML('beforeend', `<option value="${z.id}">${z.name_ar}</option>`);
+        toSel.insertAdjacentHTML('beforeend', `<option value="${z.id}">${z.name_ar}</option>`);
+      });
+    }
+
+    // Prefill from partials if the AI captured any.
+    const fromId = _findZoneIdBySlug(pickupSlug);
+    const toId = _findZoneIdBySlug(dropoffSlug);
+    if (fromId) document.getElementById('assignFrom').value = fromId;
+    if (toId) document.getElementById('assignTo').value = toId;
+
+    await refreshDrivers();
+    const modal = document.getElementById('assignModal');
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+  }
+
+  function closeAssignModal() {
+    const modal = document.getElementById('assignModal');
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+    _alertId = null;
+  }
+
+  async function refreshDrivers() {
+    const fromId = document.getElementById('assignFrom').value;
+    const url = "{{ url_for('alerts.api_available_captains') }}" + (fromId ? `?from_zone_id=${fromId}` : '');
+    const r = await fetch(url);
+    const list = await r.json();
+    const sel = document.getElementById('assignDriver');
+    const empty = document.getElementById('assignDriverEmpty');
+    sel.innerHTML = '';
+    if (list.length === 0) {
+      empty.classList.remove('hidden');
+      sel.classList.add('hidden');
+    } else {
+      empty.classList.add('hidden');
+      sel.classList.remove('hidden');
+      list.forEach(d => {
+        const zoneLabel = d.current_zone_ar || '—';
+        const availLabel = d.available ? '' : ' (مشغول)';
+        sel.insertAdjacentHTML('beforeend',
+          `<option value="${d.id}">${d.name} · ${zoneLabel}${availLabel}</option>`);
+      });
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const fromSel = document.getElementById('assignFrom');
+    if (fromSel) fromSel.addEventListener('change', refreshDrivers);
+    const toSel = document.getElementById('assignTo');
+    if (toSel) toSel.addEventListener('change', () => {
+      const priceWrap = document.getElementById('assignPriceWrap');
+      // Hide the price field when a destination is chosen (pre-priced).
+      priceWrap.style.display = toSel.value ? 'none' : 'block';
+    });
+    document.getElementById('assignModal').addEventListener('click', closeAssignModal);
+  });
+
+  async function submitAssign() {
+    if (!_alertId) return;
+    const from_zone_id = parseInt(document.getElementById('assignFrom').value, 10);
+    const toRaw = document.getElementById('assignTo').value;
+    const to_zone_id = toRaw ? parseInt(toRaw, 10) : null;
+    const priceRaw = document.getElementById('assignPrice').value.trim();
+    const price_egp = priceRaw ? parseFloat(priceRaw) : null;
+    const driverRaw = document.getElementById('assignDriver').value;
+    const driver_id = driverRaw ? parseInt(driverRaw, 10) : null;
+    if (!driver_id) { alert('اختر كابتن الأول'); return; }
+    const btn = document.getElementById('assignSubmit');
+    btn.disabled = true; btn.textContent = 'جاري الإرسال…';
+    try {
+      const resp = await fetch(`/alerts/${_alertId}/assign`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({from_zone_id, to_zone_id, price_egp, driver_id}),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('فشل: ' + (err.error || resp.status));
+        btn.disabled = false; btn.textContent = 'أرسل الرحلة';
+        return;
+      }
+      closeAssignModal();
+      window.location.reload();
+    } catch (e) {
+      alert('حصل خطأ: ' + e);
+      btn.disabled = false; btn.textContent = 'أرسل الرحلة';
+    }
+  }
+</script>
 {% endblock %}

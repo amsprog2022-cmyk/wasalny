@@ -23,6 +23,10 @@ class AiSession(db.Model):
 
     partial_pickup_slug = db.Column(db.String(60))
     partial_dropoff_slug = db.Column(db.String(60))
+    # How many times we've asked the customer for more info in this session.
+    # After the second unsuccessful clarify we escalate to a human admin
+    # rather than badger them a third time.
+    clarify_count = db.Column(db.Integer, default=0, nullable=False)
 
     last_message_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     expires_at = db.Column(db.DateTime, nullable=False)

@@ -69,6 +69,10 @@ def send_sticker_by_purpose(to_wa_id: str, purpose: str) -> Optional[dict]:
     If no sticker is registered for that purpose, returns None quietly — callers
     should still send the accompanying text message. If a sticker is registered
     but has no wa_media_id yet, we upload on first use.
+
+    Meta rejects anything but WebP 512x512 for the `sticker` message type. If
+    the source file isn't WebP we send it as an `image` message instead so the
+    branded ack still shows up in the chat.
     """
     sticker = (
         Sticker.query.filter_by(purpose=purpose, is_active=True)
@@ -76,6 +80,7 @@ def send_sticker_by_purpose(to_wa_id: str, purpose: str) -> Optional[dict]:
         .first()
     )
     if sticker is None:
+        current_app.logger.warning("no active sticker registered for purpose=%s", purpose)
         return None
     if not sticker.wa_media_id:
         try:
@@ -84,11 +89,48 @@ def send_sticker_by_purpose(to_wa_id: str, purpose: str) -> Optional[dict]:
             current_app.logger.warning("sticker upload failed for %s: %s", purpose, e)
             return None
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to_wa_id,
-        "type": "sticker",
-        "sticker": {"id": sticker.wa_media_id},
-    }
-    return _post(payload)
+    # WhatsApp's sticker type demands WebP; anything else must go via image.
+    is_webp = sticker.file_path.lower().endswith(".webp")
+    if is_webp:
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "sticker",
+            "sticker": {"id": sticker.wa_media_id},
+        }
+    else:
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_wa_id,
+            "type": "image",
+            "image": {"id": sticker.wa_media_id},
+        }
+    try:
+        return _post(payload)
+    except WhatsAppError as e:
+        current_app.logger.warning(
+            "sticker send failed for %s (media_id=%s): %s", purpose, sticker.wa_media_id, e
+        )
+        return None
+
+
+def bootstrap_default_stickers() -> None:
+    """Ensure DB rows exist for the default stickers on every boot.
+
+    Only registers rows for files that actually live on disk under
+    `stickers/`. Runs from create_app so a fresh Railway deploy is
+    immediately ready to send the "booked" and "captain_coming" acks.
+    """
+    defaults = [
+        ("booked_247", "booked", "stickers/captain_coming.png"),
+        ("captain_coming_247", "captain_coming", "stickers/captain_coming.png"),
+    ]
+    for name, purpose, file_path in defaults:
+        if not _resolve_path(file_path).exists():
+            continue
+        row = Sticker.query.filter_by(name=name).first()
+        if row is None:
+            db.session.add(Sticker(name=name, purpose=purpose, file_path=file_path, is_active=True))
+    db.session.commit()

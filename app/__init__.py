@@ -93,9 +93,20 @@ def create_app(config_class=Config):
         _apply_lightweight_migrations(app)
         _bootstrap_admin(app)
         _bootstrap_zones(app)
+        _bootstrap_stickers(app)
         _init_firebase_admin(app)
 
     return app
+
+
+def _bootstrap_stickers(app):
+    """Ensure default sticker DB rows exist so the 'booked' ack fires
+    on every deploy without needing to run seed_stickers manually."""
+    try:
+        from app.services.stickers import bootstrap_default_stickers
+        bootstrap_default_stickers()
+    except Exception as e:  # noqa: BLE001
+        print(f"[bootstrap] stickers: {e}")
 
 
 def _apply_lightweight_migrations(app):
@@ -171,7 +182,22 @@ def _apply_lightweight_migrations(app):
             except Exception as e:  # noqa: BLE001
                 # Already nullable — Postgres raises when there's nothing to drop.
                 print(f"[migrate] rides.to_zone_id nullable: {e}")
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id ensured")
+
+        # AI session clarify counter — bumped every time we ask the customer
+        # a follow-up. After 2 unsuccessful rounds we escalate to admin.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE ai_sessions ADD COLUMN IF NOT EXISTS clarify_count INTEGER DEFAULT 0 NOT NULL"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(ai_sessions)")
+            ).fetchall()}
+            if "clarify_count" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE ai_sessions ADD COLUMN clarify_count INTEGER DEFAULT 0 NOT NULL"
+                ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count ensured")
 
 
 def _init_firebase_admin(app):
