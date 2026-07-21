@@ -34,9 +34,12 @@
               </td>
               <td class="px-4 py-3 text-text-muted">{{ p.get('reason', '—') }}</td>
               <td class="px-4 py-3 text-left whitespace-nowrap">
-                <button type="button" class="btn-primary"
+                <button type="button" class="btn-primary js-assign-btn"
                         style="padding: 6px 14px; font-size: 12px;"
-                        onclick="openAssignModal({{ a.id }}, {{ (customers.get(a.customer_id).name or customers.get(a.customer_id).wa_id) | default('عميل') | tojson }}, {{ (p.get('partial_pickup_slug') or '') | tojson }}, {{ (p.get('partial_dropoff_slug') or '') | tojson }})">
+                        data-alert-id="{{ a.id }}"
+                        data-customer-name="{% if c %}{{ c.name or c.wa_id }}{% else %}عميل{% endif %}"
+                        data-pickup-slug="{{ p.get('partial_pickup_slug') or '' }}"
+                        data-dropoff-slug="{{ p.get('partial_dropoff_slug') or '' }}">
                   اسند لكابتن
                 </button>
                 <form method="post" action="{{ url_for('alerts.take_over', alert_id=a.id) }}" class="inline">
@@ -92,7 +95,7 @@
 
 <!-- Assign-to-captain modal -->
 <div id="assignModal" class="fixed inset-0 hidden bg-black/70 z-50 items-center justify-center p-4" style="align-items:center;">
-  <div class="card p-6 w-full max-w-lg space-y-4" onclick="event.stopPropagation()">
+  <div class="card p-6 w-full max-w-lg space-y-4">
     <h3 class="font-bold text-lg" id="assignCustomer">اسند رحلة لكابتن</h3>
 
     <div>
@@ -198,7 +201,21 @@
     }
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
+  function _wireAssignButtons() {
+    document.querySelectorAll('.js-assign-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openAssignModal(
+          parseInt(btn.dataset.alertId, 10),
+          btn.dataset.customerName || 'عميل',
+          btn.dataset.pickupSlug || '',
+          btn.dataset.dropoffSlug || '',
+        );
+      });
+    });
+  }
+
+  function _initAssignUi() {
     const fromSel = document.getElementById('assignFrom');
     if (fromSel) fromSel.addEventListener('change', refreshDrivers);
     const toSel = document.getElementById('assignTo');
@@ -207,8 +224,19 @@
       // Hide the price field when a destination is chosen (pre-priced).
       priceWrap.style.display = toSel.value ? 'none' : 'block';
     });
-    document.getElementById('assignModal').addEventListener('click', closeAssignModal);
-  });
+    // Backdrop-click closes; clicks inside the card must not bubble here.
+    const modal = document.getElementById('assignModal');
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeAssignModal();
+    });
+    _wireAssignButtons();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initAssignUi);
+  } else {
+    _initAssignUi();
+  }
 
   async function submitAssign() {
     if (!_alertId) return;
