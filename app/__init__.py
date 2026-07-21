@@ -93,10 +93,44 @@ def create_app(config_class=Config):
         _apply_lightweight_migrations(app)
         _bootstrap_admin(app)
         _bootstrap_zones(app)
+        _bootstrap_benha_regions(app)
         _bootstrap_stickers(app)
         _init_firebase_admin(app)
 
     return app
+
+
+def _bootstrap_benha_regions(app):
+    """Ensure every region from ops/benha_regions.py exists as a Zone.
+
+    Idempotent — only inserts zones whose name_ar isn't in the table yet.
+    Runs after _bootstrap_zones so the initial test zones stay untouched.
+    Uses the Arabic name as slug (utf-8 is fine for Postgres/SQLite) and
+    also as name_en since there's no reliable English transliteration for
+    ~350 hyperlocal spots.
+    """
+    from app.models.zone import Zone
+    try:
+        from ops.benha_regions import REGIONS
+    except Exception as e:  # noqa: BLE001
+        print(f"[bootstrap] regions import failed: {e}")
+        return
+
+    existing_names = {n for (n,) in db.session.query(Zone.name_ar).all()}
+    inserted = 0
+    for name_ar in REGIONS:
+        if name_ar in existing_names:
+            continue
+        # Slug must be unique + short-ish; use a compact hash of the Arabic
+        # name so we don't have to transliterate. Prefix with 'r-' to avoid
+        # colliding with the seeded slugs ('ramla', 'downtown', ...).
+        import hashlib as _h
+        slug = "r-" + _h.md5(name_ar.encode("utf-8")).hexdigest()[:10]
+        db.session.add(Zone(slug=slug, name_ar=name_ar, name_en=name_ar, is_active=True))
+        inserted += 1
+    if inserted:
+        db.session.commit()
+    print(f"[bootstrap] Benha regions: +{inserted} inserted, {Zone.query.count()} total")
 
 
 def _bootstrap_stickers(app):

@@ -59,16 +59,26 @@ def get_pending_fees(customer_id: int) -> tuple[Decimal, list[int]]:
 
 
 def quote(customer_id: int, from_zone_id: int, to_zone_id: int) -> Optional[Quote]:
-    """Return the price quote for a would-be booking, or None if no pricing row exists."""
+    """Return the price quote for a would-be booking.
+
+    Falls back to DEFAULT_ZONE_PRICE_EGP when no ZonePricing row exists for
+    the pair — with ~350 hyperlocal Benha regions we can't maintain a full
+    122k-row matrix. The captain can always override the price on-the-fly
+    once they've picked up the customer.
+    """
     pricing = ZonePricing.query.filter_by(
         from_zone_id=from_zone_id, to_zone_id=to_zone_id
     ).first()
     if pricing is None:
-        return None
-    ride_price = Decimal(pricing.price_egp)
+        default = current_app.config.get("DEFAULT_ZONE_PRICE_EGP", "25")
+        ride_price = Decimal(str(default))
+    else:
+        ride_price = Decimal(pricing.price_egp)
     commission = (ride_price * _commission_rate()).quantize(Decimal("0.01"))
     pending, pending_ids = get_pending_fees(customer_id)
     total = (ride_price + pending).quantize(Decimal("0.01"))
+    # ride_price stays untyped (Decimal). Keep the Optional[Quote] contract
+    # working — we no longer return None because default fallback exists.
     return Quote(
         from_zone_id=from_zone_id,
         to_zone_id=to_zone_id,

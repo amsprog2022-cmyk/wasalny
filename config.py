@@ -33,6 +33,10 @@ class Config:
 
     # Business rules (Decisions #10, #14, config §Appendix B)
     WASSALNY_COMMISSION_RATE = os.getenv("WASSALNY_COMMISSION_RATE", "0.15")
+    # Fallback price when a zone pair isn't in the pricing matrix. With ~350
+    # hyperlocal Benha regions we can't maintain a full N×N matrix; captains
+    # override on-the-fly when needed.
+    DEFAULT_ZONE_PRICE_EGP = os.getenv("DEFAULT_ZONE_PRICE_EGP", "25")
     NO_SHOW_FEE_EGP = os.getenv("NO_SHOW_FEE_EGP", "10")
     NO_SHOW_ENABLE_AFTER_MINUTES = int(os.getenv("NO_SHOW_ENABLE_AFTER_MINUTES", "5"))
     BROADCAST_ACCEPT_WINDOW_SECONDS = int(
