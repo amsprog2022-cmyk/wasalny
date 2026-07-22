@@ -348,6 +348,30 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
             _try_send(customer.wa_id, result.reply_ar, customer=customer)
         return {"handled": True, "action": "chat"}
 
+    # Merge whatever partials Gemini extracted from this turn.
+    if result.from_zone_slug:
+        session.partial_pickup_slug = result.from_zone_slug
+    if result.to_zone_slug:
+        session.partial_dropoff_slug = result.to_zone_slug
+
+    # Explicit clarify path — Gemini decided we need one more question. Skip
+    # the confidence gate here: the AI is deliberately asking to disambiguate,
+    # so we always want the friendly follow-up, not a handoff.
+    if result.intent == "clarify":
+        session.clarify_count = (session.clarify_count or 0) + 1
+        if session.clarify_count > 2:
+            db.session.commit()
+            _open_handoff(customer, reason="clarify_exhausted",
+                          message_body=message_body, session_id=session.id)
+            return {"handled": True, "action": "handoff"}
+        db.session.commit()
+        _try_send(
+            customer.wa_id,
+            result.reply_ar or "🌟 تحب تروح فين؟",
+            customer=customer,
+        )
+        return {"handled": True, "action": "clarify"}
+
     # From here on we're in the booking flow — enforce confidence threshold.
     if result.confidence < MIN_CONFIDENCE:
         _open_handoff(
@@ -357,12 +381,6 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
             session_id=session.id,
         )
         return {"handled": True, "action": "handoff", "confidence": result.confidence}
-
-    # Merge new partials.
-    if result.from_zone_slug:
-        session.partial_pickup_slug = result.from_zone_slug
-    if result.to_zone_slug:
-        session.partial_dropoff_slug = result.to_zone_slug
 
     # Short chatbot flow: at most one follow-up. Anything after that goes
     # to an admin so we don't loop-badger the customer.
