@@ -71,14 +71,33 @@
         </thead>
         <tbody>
           {% for a in no_driver %}
+            {% set r = rides.get(a.ride_id) %}
+            {% set c = customers.get(a.customer_id) %}
             <tr class="border-t border-white/5">
               <td class="px-4 py-3 text-text-muted">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
               <td class="px-4 py-3">
                 {% if a.ride_id %}
                   <a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">رحلة #{{ a.ride_id }}</a>
+                  {% if r %}
+                    <div class="text-xs text-text-muted">
+                      {{ r.from_zone.name_ar if r.from_zone else '—' }}
+                      {% if r.to_zone %} ← {{ r.to_zone.name_ar }}{% endif %}
+                    </div>
+                  {% endif %}
                 {% else %} — {% endif %}
               </td>
-              <td class="px-4 py-3 text-left">
+              <td class="px-4 py-3 text-left whitespace-nowrap">
+                {% if r %}
+                <button type="button" class="btn-primary js-assign-btn"
+                        style="padding: 6px 14px; font-size: 12px;"
+                        data-alert-id="{{ a.id }}"
+                        data-customer-name="{% if c %}{{ c.name or c.wa_id }}{% else %}عميل{% endif %}"
+                        data-pickup-zone-id="{{ r.from_zone_id or '' }}"
+                        data-dropoff-zone-id="{{ r.to_zone_id or '' }}"
+                        data-price-egp="{{ r.price_egp or '' }}">
+                  اسند لكابتن
+                </button>
+                {% endif %}
                 <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
                   <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">تم</button>
                 </form>
@@ -139,10 +158,11 @@
     return z ? z.id : '';
   }
 
-  async function openAssignModal(alertId, customerName, pickupSlug, dropoffSlug) {
+  async function openAssignModal(alertId, customerName, pickupSlug, dropoffSlug, hints) {
     _alertId = alertId;
+    hints = hints || {};
     document.getElementById('assignCustomer').textContent = 'اسند رحلة لـ ' + customerName;
-    document.getElementById('assignPrice').value = '';
+    document.getElementById('assignPrice').value = hints.priceEgp || '';
 
     // Load zones (cache after first load).
     if (_zones.length === 0) {
@@ -159,11 +179,15 @@
       });
     }
 
-    // Prefill from partials if the AI captured any.
-    const fromId = _findZoneIdBySlug(pickupSlug);
-    const toId = _findZoneIdBySlug(dropoffSlug);
-    if (fromId) document.getElementById('assignFrom').value = fromId;
-    if (toId) document.getElementById('assignTo').value = toId;
+    // Prefill: direct zone IDs (from no_driver alerts) win; slugs (from AI
+    // handoffs) are the fallback.
+    const fromId = hints.pickupZoneId || _findZoneIdBySlug(pickupSlug);
+    const toId = hints.dropoffZoneId || _findZoneIdBySlug(dropoffSlug);
+    if (fromId) document.getElementById('assignFrom').value = String(fromId);
+    if (toId) document.getElementById('assignTo').value = String(toId);
+    // Hide the price field when a destination is chosen (pre-priced).
+    document.getElementById('assignPriceWrap').style.display =
+      document.getElementById('assignTo').value ? 'none' : 'block';
 
     await refreshDrivers();
     const modal = document.getElementById('assignModal');
@@ -210,6 +234,11 @@
           btn.dataset.customerName || 'عميل',
           btn.dataset.pickupSlug || '',
           btn.dataset.dropoffSlug || '',
+          {
+            pickupZoneId: btn.dataset.pickupZoneId || '',
+            dropoffZoneId: btn.dataset.dropoffZoneId || '',
+            priceEgp: btn.dataset.priceEgp || '',
+          },
         );
       });
     });

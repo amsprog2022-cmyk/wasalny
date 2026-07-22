@@ -27,8 +27,11 @@ class Config:
     REDIS_URL = os.getenv("REDIS_URL", "")
 
     # Driver availability
+    # 5 minutes so a captain whose phone briefly backgrounds the app is still
+    # counted as available and reachable via FCM push. Was 60s which was too
+    # aggressive — iOS backgrounds apps within ~30s of inactivity.
     DRIVER_HEARTBEAT_TIMEOUT_SECONDS = int(
-        os.getenv("DRIVER_HEARTBEAT_TIMEOUT_SECONDS", "60")
+        os.getenv("DRIVER_HEARTBEAT_TIMEOUT_SECONDS", "300")
     )
 
     # Business rules (Decisions #10, #14, config §Appendix B)

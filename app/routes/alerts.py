@@ -47,12 +47,19 @@ def index():
     cust_ids = {a.customer_id for a in open_alerts if a.customer_id}
     customers = {c.id: c for c in Customer.query.filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
 
+    # Preload the underlying rides for no_driver rows so we can pre-fill the
+    # assign modal (pickup zone, destination, price) without a second lookup.
+    from app.models.ride import Ride
+    ride_ids = {a.ride_id for a in no_driver if a.ride_id}
+    rides = {r.id: r for r in Ride.query.filter(Ride.id.in_(ride_ids)).all()} if ride_ids else {}
+
     return render_template(
         "alerts/index.html",
         handoffs=handoffs,
         no_driver=no_driver,
         other=other,
         customers=customers,
+        rides=rides,
         parse_json=json.loads,
     )
 

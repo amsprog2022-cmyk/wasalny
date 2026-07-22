@@ -273,6 +273,41 @@ def match_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
         r.delete(f"ride:{ride.id}:lock")
         ride_lifecycle.cancel(ride, actor="system", reason="no_driver_available")
 
+        # Surface it in the admin dashboard so operations can manually assign
+        # a captain. Also live-emit so /alerts refreshes instantly.
+        try:
+            from app.models.ai_session import AdminAlert
+            alert = AdminAlert(
+                kind="no_driver",
+                payload_json=json.dumps(
+                    {
+                        "from_zone_id": ride.from_zone_id,
+                        "from_zone_ar": (ride.from_zone.name_ar if ride.from_zone else None),
+                        "to_zone_id": ride.to_zone_id,
+                        "to_zone_ar": (ride.to_zone.name_ar if ride.to_zone else None),
+                        "source": ride.source,
+                        "customer_wa_id": (ride.customer.wa_id if ride.customer else None),
+                    },
+                    ensure_ascii=False,
+                ),
+                customer_id=ride.customer_id,
+                ride_id=ride.id,
+            )
+            db.session.add(alert)
+            db.session.commit()
+            socketio.emit(
+                "no_driver_alert_new",
+                {
+                    "id": alert.id,
+                    "ride_id": ride.id,
+                    "customer_id": ride.customer_id,
+                    "from_zone_ar": ride.from_zone.name_ar if ride.from_zone else None,
+                },
+                namespace="/inbox",
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("no_driver alert create failed: %s", e)
+
 
 def start_matching(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     """Spawn the matching greenlet.
