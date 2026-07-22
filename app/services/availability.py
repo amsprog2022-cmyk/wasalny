@@ -143,24 +143,58 @@ def get_presence(driver_id: int) -> DriverPresence:
 
 
 def available_drivers_in_zone(zone_id: int) -> list[int]:
-    """Fair-ordered list of driver_ids ready to take a trip in this zone.
+    """Return every driver reachable in this zone.
 
-    Trims out drivers whose heartbeat has expired before returning.
+    Two paths:
+      1. Fast path — the Redis sorted-set updated by heartbeats.
+      2. Fallback — scan `driver:*:status` hashes. This catches captains
+         whose app is backgrounded (iOS backgrounds within ~30s so their
+         heartbeat expires quickly) but who are still `online=1` in the
+         hash. FCM push in matching.py wakes them.
+
+    We only trim entries older than 1h so genuinely dead sessions get
+    cleaned up eventually without punishing a backgrounded captain.
     """
     r = _r()
-    cutoff = time.time() - _hb_timeout()
-    # Drop stale
-    r.zremrangebyscore(k_zone(zone_id), min="-inf", max=cutoff)
-    # Oldest heartbeat first → fairest broadcast order
-    ids = r.zrange(k_zone(zone_id), 0, -1)
-    return [int(x) for x in ids]
+    long_stale_cutoff = time.time() - max(_hb_timeout(), 3600)
+    r.zremrangebyscore(k_zone(zone_id), min="-inf", max=long_stale_cutoff)
+    ids: list[int] = [int(x) for x in r.zrange(k_zone(zone_id), 0, -1)]
+    # Supplement with a hash scan for any online captain in this zone that
+    # the zset doesn't currently know about (backgrounded, no recent heartbeat).
+    seen = set(ids)
+    cursor = 0
+    while True:
+        cursor, keys = r.scan(cursor=cursor, match="driver:*:status", count=200)
+        for key in keys:
+            key_str = key.decode() if isinstance(key, (bytes, bytearray)) else key
+            data = r.hgetall(key)
+            def _get(k: str) -> str:
+                v = data.get(k) or data.get(k.encode()) if data else None
+                if isinstance(v, (bytes, bytearray)):
+                    return v.decode()
+                return str(v) if v is not None else ""
+            if _get("online") != "1":
+                continue
+            if _get("zone_id") != str(zone_id):
+                continue
+            parts = key_str.split(":")
+            if len(parts) < 3:
+                continue
+            try:
+                did = int(parts[1])
+            except ValueError:
+                continue
+            if did in seen:
+                continue
+            seen.add(did)
+            ids.append(did)
+        if cursor == 0:
+            break
+    return ids
 
 
 def count_available_in_zone(zone_id: int) -> int:
-    r = _r()
-    cutoff = time.time() - _hb_timeout()
-    r.zremrangebyscore(k_zone(zone_id), min="-inf", max=cutoff)
-    return int(r.zcard(k_zone(zone_id)))
+    return len(available_drivers_in_zone(zone_id))
 
 
 def zone_counts(zone_ids: Iterable[int]) -> dict[int, int]:
