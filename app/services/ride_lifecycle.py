@@ -175,6 +175,23 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
         collapse_key=f"ride:{ride.id}",
     )
 
+    # WhatsApp customers don't have our app — send them a real WhatsApp text
+    # so they see the captain's name and phone as well.
+    if ride.source == "whatsapp" and ride.customer is not None:
+        try:
+            from app.services import whatsapp as _wa
+            from app.services.whatsapp import WhatsAppError
+            captain_wa = (driver.wa_id if driver else "") or ""
+            plate_part = f" · {car_plate}" if car_plate else ""
+            body = (
+                f"🚗 كابتن جاي: {driver_name}{plate_part}\n"
+                f"رقمه: +{captain_wa}\n"
+                f"لو محتاج تكلمه اضغط على الرقم."
+            )
+            _wa.send_text(ride.customer.wa_id, body)
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("WhatsApp captain-assigned notify failed: %s", e)
+
 
 def arrived(ride: Ride, actor_driver_id: int) -> None:
     """Captain has reached the pickup location — notify customer.
@@ -203,6 +220,16 @@ def arrived(ride: Ride, actor_driver_id: int) -> None:
         data={"kind": "captain_arrived", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
     )
+
+    # WhatsApp customer arrival ping.
+    if ride.source == "whatsapp" and ride.customer is not None:
+        try:
+            from app.services import whatsapp as _wa
+            plate_part = f" · {car_plate}" if car_plate else ""
+            body = f"🚗 الكابتن وصل! {driver_name}{plate_part} — انزل ياكابتن."
+            _wa.send_text(ride.customer.wa_id, body)
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("WhatsApp captain-arrived notify failed: %s", e)
 
 
 def start(ride: Ride, actor_driver_id: int) -> None:

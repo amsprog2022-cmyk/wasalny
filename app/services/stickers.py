@@ -119,18 +119,34 @@ def send_sticker_by_purpose(to_wa_id: str, purpose: str) -> Optional[dict]:
 def bootstrap_default_stickers() -> None:
     """Ensure DB rows exist for the default stickers on every boot.
 
-    Only registers rows for files that actually live on disk under
-    `stickers/`. Runs from create_app so a fresh Railway deploy is
-    immediately ready to send the "booked" and "captain_coming" acks.
+    Prefers the .webp file so Meta accepts it as a real sticker (sticker
+    type requires WebP; PNG falls back to `image` type). If the DB row
+    already points at a stale extension (e.g. .png from an older deploy)
+    we migrate the file_path AND null out wa_media_id so the next send
+    re-uploads with the new mime type.
     """
     defaults = [
-        ("booked_247", "booked", "stickers/captain_coming.png"),
-        ("captain_coming_247", "captain_coming", "stickers/captain_coming.png"),
+        ("booked_247", "booked"),
+        ("captain_coming_247", "captain_coming"),
     ]
-    for name, purpose, file_path in defaults:
-        if not _resolve_path(file_path).exists():
-            continue
+    # Prefer WebP; fall back to PNG only if WebP isn't shipped yet.
+    for candidate in ("stickers/captain_coming.webp", "stickers/captain_coming.png"):
+        if _resolve_path(candidate).exists():
+            preferred_path = candidate
+            break
+    else:
+        # Nothing to seed.
+        return
+
+    for name, purpose in defaults:
         row = Sticker.query.filter_by(name=name).first()
         if row is None:
-            db.session.add(Sticker(name=name, purpose=purpose, file_path=file_path, is_active=True))
+            db.session.add(Sticker(
+                name=name, purpose=purpose,
+                file_path=preferred_path, is_active=True,
+            ))
+        elif row.file_path != preferred_path:
+            # File on disk changed extension → force re-upload with the new mime.
+            row.file_path = preferred_path
+            row.wa_media_id = None
     db.session.commit()
