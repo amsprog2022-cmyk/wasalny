@@ -695,6 +695,102 @@ def whatsapp_status():
     })
 
 
+@debug_api_bp.get("/sticker-status")
+def sticker_status():
+    """Show the state of each sticker row in the DB plus whether the source
+    file actually exists on disk. Helps diagnose why the "booked" ack isn't
+    coming through.
+    """
+    from pathlib import Path
+    from app.models.sticker import Sticker
+    project_root = Path(__file__).resolve().parent.parent.parent
+    rows = Sticker.query.order_by(Sticker.id.asc()).all()
+    out = []
+    for s in rows:
+        p = project_root / s.file_path
+        out.append({
+            "id": s.id,
+            "name": s.name,
+            "purpose": s.purpose,
+            "file_path": s.file_path,
+            "file_exists": p.exists(),
+            "file_size_bytes": (p.stat().st_size if p.exists() else 0),
+            "wa_media_id": s.wa_media_id,
+            "is_active": s.is_active,
+        })
+    return jsonify({"stickers": out, "count": len(out)})
+
+
+@debug_api_bp.get("/latest-rides")
+def latest_rides():
+    """Show the last 10 rides + matching diagnosis so we can see why a ride
+    wasn't picked up: was matching started? did any drivers exist in the
+    pickup zone? did they accept/reject?
+    """
+    from app.models.ride import Ride, Broadcast
+    from app.services import availability as av
+
+    rides = Ride.query.order_by(Ride.id.desc()).limit(10).all()
+    out = []
+    for r in rides:
+        # Live driver count in the pickup zone.
+        live_count = av.count_available_in_zone(r.from_zone_id) if r.from_zone_id else 0
+        live_ids = av.available_drivers_in_zone(r.from_zone_id) if r.from_zone_id else []
+        # Broadcast history for this ride
+        bcs = Broadcast.query.filter_by(ride_id=r.id).order_by(Broadcast.id.asc()).all()
+        broadcasts = [
+            {
+                "zone_id": b.zone_id,
+                "driver_ids": (json.loads(b.driver_ids_json) if b.driver_ids_json else []),
+                "outcome": b.outcome,
+                "accepted_by_driver_id": b.accepted_by_driver_id,
+                "started_at": b.started_at.isoformat() if b.started_at else None,
+                "ended_at": b.ended_at.isoformat() if b.ended_at else None,
+            }
+            for b in bcs
+        ]
+        out.append({
+            "id": r.id,
+            "status": r.status,
+            "source": r.source,
+            "customer_id": r.customer_id,
+            "driver_id": r.driver_id,
+            "from_zone_id": r.from_zone_id,
+            "from_zone_ar": (r.from_zone.name_ar if r.from_zone else None),
+            "to_zone_id": r.to_zone_id,
+            "to_zone_ar": (r.to_zone.name_ar if r.to_zone else None),
+            "price_egp": float(r.price_egp),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "live_drivers_in_pickup_zone_count": live_count,
+            "live_drivers_in_pickup_zone_ids": live_ids,
+            "broadcasts": broadcasts,
+        })
+    return jsonify({"rides": out})
+
+
+@debug_api_bp.get("/driver-presence")
+def driver_presence():
+    """Show live Redis presence for every driver so we can see who is
+    actually available in which zone, independent of what the app thinks.
+    """
+    from app.models.driver import Driver
+    from app.services import availability as av
+    drivers = Driver.query.filter(Driver.is_active == True).all()  # noqa: E712
+    out = []
+    for d in drivers:
+        p = av.get_presence(d.id)
+        out.append({
+            "id": d.id,
+            "name": d.name,
+            "wa_id": d.wa_id,
+            "online": p.online,
+            "available": p.available,
+            "zone_id": p.zone_id,
+            "last_hb": p.last_hb,
+        })
+    return jsonify({"drivers": out, "count": len(out)})
+
+
 def _next_action(checks, cust_tokens, driv_tokens, debug_tok_set):
     """Give the user one clear thing to do next."""
     for c in checks[:6]:
