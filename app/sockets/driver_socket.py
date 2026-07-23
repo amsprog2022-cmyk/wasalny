@@ -91,6 +91,9 @@ class DriverNamespace(Namespace):
         if not driver_id:
             return
         av.set_offline(driver_id)
+        # set_offline already zrems the GEO entry, but do it explicitly here
+        # too so the intent is obvious to whoever reads this handler next.
+        av.clear_position(driver_id)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
 
     def on_driver_heartbeat(self, data):
@@ -98,6 +101,28 @@ class DriverNamespace(Namespace):
         if not driver_id:
             return
         av.heartbeat(driver_id)
+
+    def on_driver_position(self, data):
+        """Live GPS from the captain app (phase 1).
+
+        Captain-driven events use underscores — Flask-SocketIO's
+        `on_driver_position(self)` handler matches an emitted event named
+        `driver_position`. Payload: {lat: float, lng: float}. Silently
+        drops malformed / out-of-range values so a bad phone can't crash
+        the pipeline.
+        """
+        driver_id = _driver_id_from_token()
+        if not driver_id:
+            return
+        payload = data or {}
+        try:
+            lat = float(payload.get("lat"))
+            lng = float(payload.get("lng"))
+        except (TypeError, ValueError):
+            return
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+            return
+        av.set_position(driver_id, lat, lng)
 
     def on_driver_available(self, data):
         driver_id = _driver_id_from_token()

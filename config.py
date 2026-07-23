@@ -34,6 +34,12 @@ class Config:
         os.getenv("DRIVER_HEARTBEAT_TIMEOUT_SECONDS", "300")
     )
 
+    # GPS tracking (phase 1: captain streams position, matching still zone-based).
+    # last_position_at older than this counts as stale in the debug view.
+    DRIVER_POSITION_TTL_SECONDS = int(os.getenv("DRIVER_POSITION_TTL_SECONDS", "600"))
+    # Nearest-N radius used by matching (phase 2 onwards).
+    GEO_SEARCH_RADIUS_KM = float(os.getenv("GEO_SEARCH_RADIUS_KM", "5"))
+
     # Business rules (Decisions #10, #14, config §Appendix B)
     WASSALNY_COMMISSION_RATE = os.getenv("WASSALNY_COMMISSION_RATE", "0.15")
     # Fallback price when a zone pair isn't in the pricing matrix. With ~350

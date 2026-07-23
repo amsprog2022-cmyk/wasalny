@@ -57,6 +57,14 @@ class Driver(db.Model):
     # Store policies (in-app account deletion).
     deleted_at = db.Column(db.DateTime)
 
+    # Live GPS. Redis (driver_positions GEO set) is the hot path; these columns
+    # are the durable snapshot updated on trip lifecycle events + when the
+    # captain goes online after a long gap. Nullable so captains never issued
+    # a position (offline drivers, admin-created seeds) don't break queries.
+    latitude = db.Column(db.Float)
+    longitude = db.Column(db.Float)
+    last_position_at = db.Column(db.DateTime)
+
     # Housekeeping
     status = db.Column(db.String(20), default="offline", nullable=False)  # legacy inbox filter
     is_active = db.Column(db.Boolean, default=True, nullable=False)

@@ -791,6 +791,50 @@ def driver_presence():
     return jsonify({"drivers": out, "count": len(out)})
 
 
+@debug_api_bp.get("/driver-positions")
+def driver_positions():
+    """Show live GPS positions from Redis GEO for every driver on record.
+
+    Useful for verifying the phase-1 tracking pipeline end-to-end and for
+    the admin dashboard map that will render captains as dots. Falls back
+    to Postgres lat/lng snapshot when Redis has no live position (e.g.,
+    the captain went offline).
+    """
+    import time
+    from app.models.driver import Driver
+    from app.services import availability as av
+    drivers = Driver.query.filter(Driver.is_active == True).all()  # noqa: E712
+    now = time.time()
+    out = []
+    for d in drivers:
+        # Prefer live Redis position; fall back to durable Postgres snapshot.
+        pos = av.get_position(d.id)
+        source = "redis"
+        if pos is None and d.latitude is not None and d.longitude is not None:
+            pos = (float(d.latitude), float(d.longitude))
+            source = "postgres"
+        if pos is None:
+            continue
+        lat, lng = pos
+        presence = av.get_presence(d.id)
+        age = None
+        if presence.last_hb:
+            age = int(now - presence.last_hb)
+        out.append({
+            "id": d.id,
+            "name": d.name,
+            "wa_id": d.wa_id,
+            "latitude": lat,
+            "longitude": lng,
+            "source": source,
+            "online": presence.online,
+            "available": presence.available,
+            "zone_id": presence.zone_id,
+            "last_hb_age_seconds": age,
+        })
+    return jsonify({"drivers": out, "count": len(out)})
+
+
 def _next_action(checks, cust_tokens, driv_tokens, debug_tok_set):
     """Give the user one clear thing to do next."""
     for c in checks[:6]:

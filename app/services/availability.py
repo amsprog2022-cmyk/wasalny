@@ -41,6 +41,11 @@ def k_zone(zone_id: int) -> str:
     return f"zone:{zone_id}:available_drivers"
 
 
+# Global GEO index of all live captain positions. GEOADD/GEOSEARCH-only.
+# Phase 1: populated by the captain app. Phase 2: read by the matcher.
+GEO_KEY = "driver_positions"
+
+
 # ---------- writes ----------
 
 def set_online(driver_id: int, zone_id: int) -> None:
@@ -66,6 +71,12 @@ def set_offline(driver_id: int) -> None:
     if prev:
         r.zrem(k_zone(int(prev)), str(driver_id))
     r.hset(k_driver(driver_id), mapping={"online": "0", "available": "0"})
+    # Also drop from the GEO index so a stale point never shows a captain
+    # who's no longer working. Safe if the key was never GEOADD'd.
+    try:
+        r.zrem(GEO_KEY, str(driver_id))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def set_available(driver_id: int, available: bool) -> None:
@@ -199,3 +210,77 @@ def count_available_in_zone(zone_id: int) -> int:
 
 def zone_counts(zone_ids: Iterable[int]) -> dict[int, int]:
     return {zid: count_available_in_zone(zid) for zid in zone_ids}
+
+
+# ---------- GPS position (phase 1: tracking, phase 2: matching) ----------
+
+def set_position(driver_id: int, lat: float, lng: float) -> None:
+    """Store the driver's GPS in Redis GEO + snapshot in the status hash.
+
+    Redis GEO uses (longitude, latitude) order. We keep decimal strings on
+    the hash so consumers don't need to know the internal float precision.
+    """
+    r = _r()
+    now = time.time()
+    # redis-py's geoadd takes (name, values) where values is a flat sequence
+    # of (lng, lat, member) triples.
+    r.geoadd(GEO_KEY, [lng, lat, str(driver_id)])
+    r.hset(
+        k_driver(driver_id),
+        mapping={
+            "latitude": f"{lat:.6f}",
+            "longitude": f"{lng:.6f}",
+            "last_position_at": str(now),
+        },
+    )
+
+
+def clear_position(driver_id: int) -> None:
+    """Remove the driver from the GEO index. Called on go-offline so a
+    parked captain doesn't linger on the customer's map."""
+    _r().zrem(GEO_KEY, str(driver_id))
+
+
+def get_position(driver_id: int) -> tuple[float, float] | None:
+    """Return (lat, lng) or None if the driver has no position on record."""
+    r = _r()
+    result = r.geopos(GEO_KEY, str(driver_id))
+    if not result or result[0] is None:
+        return None
+    lng, lat = result[0]
+    return float(lat), float(lng)
+
+
+def nearest_drivers(
+    lat: float,
+    lng: float,
+    radius_km: float,
+    limit: int = 10,
+) -> list[tuple[int, float, tuple[float, float]]]:
+    """Nearest-N GEO search, returned as [(driver_id, distance_km, (lat, lng)), ...]
+    sorted ascending by distance. Phase 2 will consume this in the matching
+    engine. Phase 1 keeps it around for the debug endpoint.
+    """
+    r = _r()
+    rows = r.geosearch(
+        GEO_KEY,
+        longitude=lng,
+        latitude=lat,
+        unit="km",
+        radius=radius_km,
+        sort="ASC",
+        count=limit,
+        withcoord=True,
+        withdist=True,
+    )
+    out: list[tuple[int, float, tuple[float, float]]] = []
+    for row in rows or []:
+        # Layout: [member, distance, (lng, lat)]
+        try:
+            did = int(row[0])
+            dist = float(row[1])
+            coord_lng, coord_lat = row[2]
+            out.append((did, dist, (float(coord_lat), float(coord_lng))))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out

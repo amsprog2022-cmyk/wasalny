@@ -231,7 +231,31 @@ def _apply_lightweight_migrations(app):
                 conn.execute(text(
                     "ALTER TABLE ai_sessions ADD COLUMN clarify_count INTEGER DEFAULT 0 NOT NULL"
                 ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count ensured")
+
+        # Live GPS columns on drivers. Redis is the hot path; these are the
+        # durable snapshot updated on lifecycle events. Nullable so existing
+        # rows don't fail the migration.
+        position_columns = [
+            ("latitude", "DOUBLE PRECISION"),
+            ("longitude", "DOUBLE PRECISION"),
+            ("last_position_at", "TIMESTAMP"),
+        ]
+        for col, coltype in position_columns:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE drivers ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text("PRAGMA table_info(drivers)")
+                ).fetchall()}
+                if col not in existing:
+                    # SQLite has no DOUBLE PRECISION — use REAL for both.
+                    sqlite_type = "REAL" if coltype == "DOUBLE PRECISION" else coltype
+                    conn.execute(text(
+                        f"ALTER TABLE drivers ADD COLUMN {col} {sqlite_type}"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position ensured")
 
 
 def _init_firebase_admin(app):
