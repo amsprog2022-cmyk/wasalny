@@ -211,17 +211,62 @@ def driver_fcm_token():
 @rides_api_bp.post("/driver/availability")
 @jwt_required()
 def driver_availability():
+    """Captain availability toggle.
+
+    Payload shapes:
+      action=online      { zone_id? | lat, lng }
+        - Pass lat/lng to auto-detect the zone via reverse-geocode.
+        - Pass zone_id to override (manual picker fallback).
+        - Response includes the resolved zone so the app can display it.
+      action=offline     {}
+      action=available   { available: bool }
+      action=zone        { zone_id }
+      action=heartbeat   {}
+    """
     from app.services import availability as av
+    from app.services import reverse_geocode as rg
+    from app.models.zone import Zone
     did = _driver_id_from_jwt()
     if did is None:
         return jsonify({"error": "driver_token_required"}), 403
     data = request.json or {}
     action = data.get("action")
+    resolved_zone_dict = None
+
     if action == "online":
-        zone_id = int(data.get("zone_id") or 0)
-        if not zone_id:
-            return jsonify({"error": "zone_id required"}), 400
-        av.set_online(did, zone_id)
+        zone_id_raw = data.get("zone_id")
+        lat_raw = data.get("lat") or data.get("latitude")
+        lng_raw = data.get("lng") or data.get("longitude")
+
+        # Prefer an explicit zone_id (manual override); otherwise resolve
+        # from GPS. If nothing works, use the default zone so the captain
+        # doesn't get bounced.
+        zone: Zone | None = None
+        if zone_id_raw:
+            try:
+                zone = Zone.query.get(int(zone_id_raw))
+            except (TypeError, ValueError):
+                zone = None
+        if zone is None and lat_raw is not None and lng_raw is not None:
+            try:
+                lat = float(lat_raw)
+                lng = float(lng_raw)
+            except (TypeError, ValueError):
+                lat = lng = None  # type: ignore
+            if lat is not None and lng is not None:
+                zone = rg.resolve_zone(lat, lng)
+                # Seed the GEO index so the admin map dot appears immediately
+                # (before the first socket position event fires).
+                av.set_position(did, lat, lng)
+        if zone is None:
+            zone = rg.default_zone()
+        if zone is None:
+            return jsonify({"error": "no_active_zone_available"}), 500
+
+        av.set_online(did, zone.id)
+        resolved_zone_dict = zone.to_dict() if hasattr(zone, "to_dict") else {
+            "id": zone.id, "slug": zone.slug, "name_ar": zone.name_ar, "name_en": zone.name_en,
+        }
     elif action == "offline":
         av.set_offline(did)
     elif action == "available":
@@ -235,7 +280,10 @@ def driver_availability():
         av.heartbeat(did)
     else:
         return jsonify({"error": "unknown_action"}), 400
-    return jsonify(av.get_presence(did).__dict__)
+    payload = av.get_presence(did).__dict__
+    if resolved_zone_dict is not None:
+        payload["zone"] = resolved_zone_dict
+    return jsonify(payload)
 
 
 # ---------- customer profile ----------
