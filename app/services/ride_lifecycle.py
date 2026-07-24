@@ -58,6 +58,24 @@ def _emit_driver(driver_id: int, event: str, data: dict) -> None:
     socketio.emit(event, data, namespace="/driver", room=f"driver:{driver_id}")
 
 
+def _emit_inbox(ride: Ride, event: str) -> None:
+    """Broadcast a ride lifecycle transition to the admin dashboard's
+    /inbox socket. Best-effort — a failed emit never affects the trip.
+
+    Used by the live map sidebar to insert/update/remove ride rows without
+    a page reload. Includes driver name so the map can render it inline.
+    """
+    try:
+        payload = {
+            "ride": ride.to_dict(include_customer_contact=True),
+            "event": event,
+            "driver_name": (ride.driver.name if ride.driver else None),
+        }
+        socketio.emit("ride_lifecycle_update", payload, namespace="/inbox")
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("ride_lifecycle_update emit failed: %s", e)
+
+
 def _no_show_fee() -> Decimal:
     return Decimal(str(current_app.config.get("NO_SHOW_FEE_EGP", "10")))
 
@@ -131,6 +149,7 @@ def mark_broadcasting(ride: Ride) -> None:
         # that the customer app uses to trigger its radar animation.
         _emit_customer(ride, "trip_status_changed")
         _emit_customer(ride, "broadcast_started")
+        _emit_inbox(ride, "broadcasting")
 
 
 def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None) -> None:
@@ -154,6 +173,7 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
 
     _emit_customer(ride, "trip_assigned", {"driver": driver_payload})
     _emit_driver(driver_id, "trip_confirmed", {"ride": ride.to_dict()})
+    _emit_inbox(ride, "assigned")
 
     # Push notifications — arrive even when apps are backgrounded or killed.
     zone_from = ride.from_zone.name_ar if ride.from_zone else ""
@@ -242,6 +262,7 @@ def start(ride: Ride, actor_driver_id: int) -> None:
     _record(ride.id, "started", "driver")
     db.session.commit()
     _emit_customer(ride, "trip_status_changed")
+    _emit_inbox(ride, "started")
     push.send_to_customer(
         ride.customer_id,
         title="🚦 الرحلة ابتدت",
@@ -277,6 +298,7 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
     db.session.commit()
     _emit_customer(ride, "trip_status_changed")
     _emit_driver(actor_driver_id, "trip_completed_ack", {"ride": ride.to_dict()})
+    _emit_inbox(ride, "completed")
     push.send_to_customer(
         ride.customer_id,
         title="✅ وصلت بأمان",
@@ -304,6 +326,7 @@ def cancel(ride: Ride, *, actor: str, reason: str) -> None:
     _emit_customer(ride, "trip_cancelled", {"reason": reason})
     if ride.driver_id:
         _emit_driver(ride.driver_id, "trip_cancelled", {"ride": ride.to_dict(), "reason": reason})
+    _emit_inbox(ride, "cancelled")
 
     # Human-readable Arabic reason for the push body
     reason_ar = {
@@ -363,6 +386,7 @@ def no_show(ride: Ride, actor_driver_id: int) -> None:
 
     _emit_customer(ride, "trip_cancelled", {"reason": "customer_no_show"})
     _emit_driver(actor_driver_id, "trip_no_show_ack", {"ride": ride.to_dict()})
+    _emit_inbox(ride, "cancelled_no_show")
     push.send_to_customer(
         ride.customer_id,
         title="⚠️ رحلة اتلغت",

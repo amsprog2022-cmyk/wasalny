@@ -40,6 +40,12 @@ class Config:
     # Nearest-N radius used by matching (phase 2 onwards).
     GEO_SEARCH_RADIUS_KM = float(os.getenv("GEO_SEARCH_RADIUS_KM", "5"))
 
+    # Map tiles — MapTiler free tier (100k loads/month) is enough for both
+    # the admin live map and the captain/customer app maps at current scale.
+    # Same key baked into the captain app; can rotate via env var without a
+    # code change if it ever leaks.
+    MAPTILER_KEY = os.getenv("MAPTILER_KEY", "parhG5kKaSBCSzASEX3O")
+
     # Business rules (Decisions #10, #14, config §Appendix B)
     WASSALNY_COMMISSION_RATE = os.getenv("WASSALNY_COMMISSION_RATE", "0.15")
     # Fallback price when a zone pair isn't in the pricing matrix. With ~350

@@ -1,0 +1,93 @@
+{% extends "layout/base.html" %}
+{% block title %}خريطة مباشرة · وصلني بنها{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  /* Full-bleed map + sidebar layout that fills the viewport below the nav. */
+  .live-map-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+    gap: 0;
+    height: calc(100vh - 60px);
+  }
+  @media (max-width: 900px) {
+    .live-map-wrap { grid-template-columns: 1fr; grid-template-rows: 60vh 1fr; }
+  }
+  #live-map { width: 100%; height: 100%; }
+  .live-map-sidebar {
+    background: #14141c;
+    border-left: 1px solid rgba(255,255,255,0.05);
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .live-map-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 8px;
+  }
+  .live-map-header h2 { font-weight: 800; font-size: 15px; }
+  .live-map-header .counts { color: #9aa0aa; font-size: 12px; }
+  .ride-row {
+    text-align: right;
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    background: #1a1a24;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .ride-row:hover { border-color: #F57C00; }
+  .ride-row .route { font-weight: 700; font-size: 13px; }
+  .ride-row .meta { color: #9aa0aa; font-size: 11px; margin-top: 2px; }
+  .status-pill {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-inline-start: 6px;
+    font-weight: 700;
+  }
+  .status-broadcasting { background: #2a2a3a; color: #F57C00; }
+  .status-assigned     { background: #1a3d1a; color: #7ED957; }
+  .status-started      { background: #1e3a5a; color: #74a4ff; }
+  .empty-note { color: #9aa0aa; font-size: 12px; padding: 24px 8px; text-align: center; }
+  /* Marker dot styling */
+  .captain-marker {
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
+    cursor: pointer;
+  }
+  .captain-marker.available { background: #22c55e; }  /* green: idle & ready */
+  .captain-marker.busy      { background: #F57C00; }  /* orange: on a trip */
+  .captain-marker.unavailable { background: #6b7280; }  /* grey: online but not accepting */
+</style>
+
+<div class="live-map-wrap">
+  <div id="live-map"></div>
+  <aside class="live-map-sidebar">
+    <div class="live-map-header">
+      <h2>الرحلات الشغالة</h2>
+      <span class="counts">
+        <span id="count-captains">0</span> كابتن ·
+        <span id="count-rides">0</span> رحلة
+      </span>
+    </div>
+    <div id="ride-list"></div>
+  </aside>
+</div>
+
+<script>
+  // Server-injected settings — read once at page load. The key restriction
+  // (bundle IDs on the MapTiler dashboard) protects against extraction.
+  window.WASSALNY = {
+    maptilerKey: {{ maptiler_key | tojson }},
+    benhaCenter: [31.1836, 30.4560],   // [lng, lat] — MapLibre order
+  };
+</script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="{{ url_for('static', filename='js/live_map.js') }}"></script>
+{% endblock %}

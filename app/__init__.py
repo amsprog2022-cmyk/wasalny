@@ -50,6 +50,7 @@ def create_app(config_class=Config):
     from app.routes.reports import reports_bp
     from app.routes.marketing import marketing_bp
     from app.routes.audit import audit_bp
+    from app.routes.live_map import live_map_bp
     from app.api.v1 import api_v1_bp
     from app.api.rides_api import rides_api_bp
     from app.api.debug_api import debug_api_bp
@@ -72,6 +73,7 @@ def create_app(config_class=Config):
     app.register_blueprint(reports_bp)
     app.register_blueprint(marketing_bp)
     app.register_blueprint(audit_bp)
+    app.register_blueprint(live_map_bp)
     app.register_blueprint(api_v1_bp)
     app.register_blueprint(rides_api_bp)
     app.register_blueprint(debug_api_bp)

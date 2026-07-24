@@ -95,6 +95,15 @@ class DriverNamespace(Namespace):
         # too so the intent is obvious to whoever reads this handler next.
         av.clear_position(driver_id)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
+        # Tell the admin live map to drop this captain's dot instantly.
+        try:
+            socketio.emit(
+                "driver_position_removed",
+                {"driver_id": driver_id},
+                namespace="/inbox",
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("driver_position_removed emit failed: %s", e)
 
     def on_driver_heartbeat(self, data):
         driver_id = _driver_id_from_token()
@@ -123,6 +132,31 @@ class DriverNamespace(Namespace):
         if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
             return
         av.set_position(driver_id, lat, lng)
+
+        # Fan out to any admin dashboards watching the live map so the dot
+        # moves in real time. Best-effort: swallow any db lookup issue so a
+        # broken emit never affects the tracking pipeline.
+        try:
+            from app.models.ride import Ride
+            driver = db.session.get(Driver, driver_id)
+            active_ride = Ride.query.filter(
+                Ride.driver_id == driver_id,
+                Ride.status.in_(("assigned", "started")),
+            ).first()
+            socketio.emit(
+                "driver_position_update",
+                {
+                    "driver_id": driver_id,
+                    "name": (driver.name if driver else None),
+                    "wa_id": (driver.wa_id if driver else None),
+                    "lat": lat,
+                    "lng": lng,
+                    "on_trip_ride_id": (active_ride.id if active_ride else None),
+                },
+                namespace="/inbox",
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("driver_position broadcast failed: %s", e)
 
     def on_driver_available(self, data):
         driver_id = _driver_id_from_token()
