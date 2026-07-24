@@ -83,7 +83,7 @@ def set_available(driver_id: int, available: bool) -> None:
     """Manual toggle from the captain app (Decision #12 — busy vs available)."""
     r = _r()
     zone_raw = r.hget(k_driver(driver_id), "zone_id")
-    if not zone_raw:
+    if not zone_raw or zone_raw == "None":
         return
     zone_id = int(zone_raw)
     now = time.time()
@@ -97,11 +97,19 @@ def set_available(driver_id: int, available: bool) -> None:
         r.zrem(k_zone(zone_id), str(driver_id))
 
 
-def change_zone(driver_id: int, new_zone_id: int) -> None:
-    """Captain reports a new current zone (e.g. after completing a trip)."""
+def change_zone(driver_id: int, new_zone_id: int | None) -> None:
+    """Captain reports a new current zone (e.g. after completing a trip).
+
+    new_zone_id may be None for GPS rides that dropped off outside any
+    zone polygon — in that case we leave the previous zone in place so
+    the captain stays visible in the last known bucket instead of being
+    written as the literal string "None" (which then crashes int()).
+    """
+    if new_zone_id is None:
+        return
     r = _r()
     prev = r.hget(k_driver(driver_id), "zone_id")
-    if prev and int(prev) != new_zone_id:
+    if prev and prev != "None" and int(prev) != new_zone_id:
         r.zrem(k_zone(int(prev)), str(driver_id))
     now = time.time()
     r.hset(
@@ -116,7 +124,7 @@ def heartbeat(driver_id: int) -> None:
     """Periodic ping from the captain app (every 15s)."""
     r = _r()
     zone_raw = r.hget(k_driver(driver_id), "zone_id")
-    if not zone_raw:
+    if not zone_raw or zone_raw == "None":
         return
     now = time.time()
     r.hset(k_driver(driver_id), "last_hb", str(now))
