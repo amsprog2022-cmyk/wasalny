@@ -206,9 +206,110 @@ def match_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     ride_lifecycle.mark_broadcasting(ride)
 
     tried: set[int] = set()
-    current_zone: Optional[Zone] = ride.from_zone
     winner: Optional[int] = None
 
+    # Phase 2: GPS matching — if the ride has pickup coordinates, run a
+    # nearest-N radius cascade instead of the zone loop.
+    if ride.pickup_lat is not None and ride.pickup_lng is not None:
+        winner = _gps_match(ride, tried, r)
+
+    # Only fall through to zone matching if the GPS path found ZERO candidates
+    # in every radius (empty GEO index) OR the ride doesn't have GPS coords.
+    if winner is None and (ride.pickup_lat is None or ride.pickup_lng is None or not tried):
+        winner = _zone_match(ride, tried, r)
+
+    # Cleanup Redis broadcast key regardless of outcome.
+    r.delete(f"broadcast:{ride.id}:offered_to")
+
+    if winner:
+        db.session.refresh(ride)
+        ride_lifecycle.assign(ride, winner, pending_fee_ids=pending_fee_ids)
+        return
+
+    db.session.refresh(ride)
+    r.delete(f"ride:{ride.id}:lock")
+    ride_lifecycle.cancel(ride, actor="system", reason="no_driver_available")
+    _emit_no_driver_alert(ride)
+    return
+
+
+def _gps_match(ride: Ride, tried: set[int], r) -> Optional[int]:
+    """Phase 2 GPS matching. Escalates through GEO_MATCH_RADII_KM until a
+    captain accepts or we run out of radii. Returns the winner's driver_id
+    or None if nobody accepts anywhere.
+    """
+    radii_str = current_app.config.get("GEO_MATCH_RADII_KM", "3,6,10")
+    try:
+        radii = [float(x.strip()) for x in str(radii_str).split(",") if x.strip()]
+    except (TypeError, ValueError):
+        radii = [3.0, 6.0, 10.0]
+    top_n = int(current_app.config.get("GEO_MATCH_TOP_N", 3))
+
+    for radius_km in radii:
+        # Ask for more than top_n so we can filter for available + not-tried
+        # without underpicking.
+        candidates = av.nearest_drivers(
+            ride.pickup_lat, ride.pickup_lng, radius_km=radius_km, limit=top_n * 4,
+        )
+        picked: list[int] = []
+        for driver_id, _distance, _coords in candidates:
+            if driver_id in tried:
+                continue
+            presence = av.get_presence(driver_id)
+            if not presence.available:
+                continue
+            picked.append(driver_id)
+            if len(picked) >= top_n:
+                break
+
+        # Audit row per radius so ops can see what the matcher tried.
+        b = Broadcast(
+            ride_id=ride.id,
+            zone_id=ride.from_zone_id or 0,
+            driver_ids_json=json.dumps(picked),
+        )
+        db.session.add(b)
+        db.session.commit()
+
+        if not picked:
+            b.outcome = "no_drivers"
+            b.ended_at = datetime.utcnow()
+            db.session.commit()
+            continue
+
+        tried.update(picked)
+
+        # Reuse the existing Redis broadcast + FCM push + Socket.IO fan-out.
+        r.sadd(f"broadcast:{ride.id}:offered_to", *[str(x) for x in picked])
+        r.expire(f"broadcast:{ride.id}:offered_to", _accept_window() + 5)
+        _emit_offer(ride, picked)
+
+        winner = _wait_for_accept(ride.id, _accept_window())
+        b.ended_at = datetime.utcnow()
+        if winner:
+            b.outcome = "accepted"
+            b.accepted_by_driver_id = winner
+            db.session.commit()
+            return winner
+
+        b.outcome = "timeout"
+        db.session.commit()
+        for did in picked:
+            socketio.emit(
+                "trip_offer_expired",
+                {"ride_id": ride.id},
+                namespace="/driver",
+                room=f"driver:{did}",
+            )
+    return None
+
+
+def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
+    """Legacy zone-based matching. Kept for WhatsApp rides + as fallback
+    when the GPS GEO index is empty. Same behaviour as before Phase 2.
+    """
+    current_zone: Optional[Zone] = ride.from_zone
+    winner: Optional[int] = None
     round_no = 0
     while round_no < _max_rounds():
         if current_zone is None:
@@ -259,54 +360,47 @@ def match_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
                 )
             current_zone = _pick_next_zone(ride, tried)
             round_no += 1
+    return winner
 
-    # Cleanup Redis broadcast key regardless of outcome
-    r.delete(f"broadcast:{ride.id}:offered_to")
 
-    if winner:
-        # Re-load in case of session state drift, then assign.
-        db.session.refresh(ride)
-        ride_lifecycle.assign(ride, winner, pending_fee_ids=pending_fee_ids)
-    else:
-        db.session.refresh(ride)
-        # Release the lock in case someone won after we gave up (rare).
-        r.delete(f"ride:{ride.id}:lock")
-        ride_lifecycle.cancel(ride, actor="system", reason="no_driver_available")
-
-        # Surface it in the admin dashboard so operations can manually assign
-        # a captain. Also live-emit so /alerts refreshes instantly.
-        try:
-            from app.models.ai_session import AdminAlert
-            alert = AdminAlert(
-                kind="no_driver",
-                payload_json=json.dumps(
-                    {
-                        "from_zone_id": ride.from_zone_id,
-                        "from_zone_ar": (ride.from_zone.name_ar if ride.from_zone else None),
-                        "to_zone_id": ride.to_zone_id,
-                        "to_zone_ar": (ride.to_zone.name_ar if ride.to_zone else None),
-                        "source": ride.source,
-                        "customer_wa_id": (ride.customer.wa_id if ride.customer else None),
-                    },
-                    ensure_ascii=False,
-                ),
-                customer_id=ride.customer_id,
-                ride_id=ride.id,
-            )
-            db.session.add(alert)
-            db.session.commit()
-            socketio.emit(
-                "no_driver_alert_new",
+def _emit_no_driver_alert(ride: Ride) -> None:
+    """Create the admin AdminAlert(kind=no_driver) + live-push to /inbox.
+    Best-effort — swallow failures so a broken emit doesn't affect the
+    ride cancellation that already happened."""
+    try:
+        from app.models.ai_session import AdminAlert
+        alert = AdminAlert(
+            kind="no_driver",
+            payload_json=json.dumps(
                 {
-                    "id": alert.id,
-                    "ride_id": ride.id,
-                    "customer_id": ride.customer_id,
-                    "from_zone_ar": ride.from_zone.name_ar if ride.from_zone else None,
+                    "from_zone_id": ride.from_zone_id,
+                    "from_zone_ar": (ride.from_zone.name_ar if ride.from_zone else None),
+                    "to_zone_id": ride.to_zone_id,
+                    "to_zone_ar": (ride.to_zone.name_ar if ride.to_zone else None),
+                    "pickup_lat": ride.pickup_lat,
+                    "pickup_lng": ride.pickup_lng,
+                    "source": ride.source,
+                    "customer_wa_id": (ride.customer.wa_id if ride.customer else None),
                 },
-                namespace="/inbox",
-            )
-        except Exception as e:  # noqa: BLE001
-            current_app.logger.warning("no_driver alert create failed: %s", e)
+                ensure_ascii=False,
+            ),
+            customer_id=ride.customer_id,
+            ride_id=ride.id,
+        )
+        db.session.add(alert)
+        db.session.commit()
+        socketio.emit(
+            "no_driver_alert_new",
+            {
+                "id": alert.id,
+                "ride_id": ride.id,
+                "customer_id": ride.customer_id,
+                "from_zone_ar": ride.from_zone.name_ar if ride.from_zone else None,
+            },
+            namespace="/inbox",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("no_driver alert create failed: %s", e)
 
 
 def start_matching(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:

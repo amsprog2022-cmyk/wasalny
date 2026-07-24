@@ -89,19 +89,60 @@ def _no_show_enable_after_minutes() -> int:
 def create_ride(
     *,
     customer_id: int,
-    from_zone_id: int,
+    from_zone_id: int | None = None,
     to_zone_id: int | None = None,
+    pickup_lat: float | None = None,
+    pickup_lng: float | None = None,
+    dropoff_lat: float | None = None,
+    dropoff_lng: float | None = None,
     source: str = "app",
 ) -> tuple[Ride, list[int]]:
     """Create a `new` ride.
 
-    App bookings must specify to_zone_id and get a pre-computed price.
-    WhatsApp bookings can omit to_zone_id — captain sets destination + price
-    on arrival via PATCH /rides/<id>/price with a new to_zone_id.
+    Three pricing paths:
+      1. Phase 2 GPS: all four coords present → distance-based `quote_by_coords`
+         + auto-populate from_zone_id via reverse-geocode.
+      2. Zone-pair: from_zone_id + to_zone_id present → fixed-table `quote`.
+      3. Deferred (WhatsApp captain-priced): only from_zone_id → price=0,
+         captain sets everything on arrival.
 
     Returns (ride, pending_fee_ids_that_were_attached).
     """
-    if to_zone_id is not None:
+    has_pickup_gps  = pickup_lat is not None and pickup_lng is not None
+    has_dropoff_gps = dropoff_lat is not None and dropoff_lng is not None
+
+    # Auto-resolve pickup zone from GPS so admin filters + reports still work
+    # even though matching now uses coordinates.
+    if has_pickup_gps and from_zone_id is None:
+        try:
+            from app.services import reverse_geocode as rg
+            zone = rg.resolve_zone(pickup_lat, pickup_lng) or rg.default_zone()
+            if zone is not None:
+                from_zone_id = zone.id
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("pickup reverse-geocode failed: %s", e)
+
+    if from_zone_id is None:
+        # Last-resort: use the default zone so the NOT-NULL column is satisfied.
+        from app.services import reverse_geocode as rg
+        zone = rg.default_zone()
+        if zone is None:
+            raise ValueError("No active zone available for the ride.")
+        from_zone_id = zone.id
+
+    quote_dict: dict
+    if has_pickup_gps and has_dropoff_gps:
+        # Phase 2 GPS-priced booking.
+        q = pricing_svc.quote_by_coords(
+            customer_id, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng,
+        )
+        price = q.ride_price_egp
+        commission = q.commission_egp
+        pending_fees = q.pending_fees_egp
+        pending_fee_ids = q.pending_fee_ids
+        quote_dict = q.to_dict()
+    elif to_zone_id is not None:
+        # Legacy zone-pair quote.
         q = pricing_svc.quote(customer_id, from_zone_id, to_zone_id)
         if q is None:
             raise ValueError("No pricing for that zone pair.")
@@ -123,6 +164,10 @@ def create_ride(
         customer_id=customer_id,
         from_zone_id=from_zone_id,
         to_zone_id=to_zone_id,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        dropoff_lat=dropoff_lat,
+        dropoff_lng=dropoff_lng,
         price_egp=price,
         commission_egp=commission,
         no_show_fee_egp=pending_fees,

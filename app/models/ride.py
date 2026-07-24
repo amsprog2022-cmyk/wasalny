@@ -28,6 +28,13 @@ class Ride(db.Model):
     # the captain sets the destination on arrival. App bookings always set it.
     to_zone_id = db.Column(db.Integer, db.ForeignKey("zones.id"), nullable=True)
 
+    # Phase 2 GPS booking. Nullable — WhatsApp / legacy zone-only rides
+    # leave these NULL and continue to use the zone_id columns above.
+    pickup_lat  = db.Column(db.Float)
+    pickup_lng  = db.Column(db.Float)
+    dropoff_lat = db.Column(db.Float)
+    dropoff_lng = db.Column(db.Float)
+
     # Money — computed at create time when both zones are known. For WhatsApp
     # rides this starts as 0 and captain overrides via /rides/<id>/price.
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
@@ -68,6 +75,10 @@ class Ride(db.Model):
             "to_zone_id": self.to_zone_id,
             "from_zone": self.from_zone.name_ar if self.from_zone else None,
             "to_zone": self.to_zone.name_ar if self.to_zone else None,
+            "pickup_lat":  self.pickup_lat,
+            "pickup_lng":  self.pickup_lng,
+            "dropoff_lat": self.dropoff_lat,
+            "dropoff_lng": self.dropoff_lng,
             "price_egp": float(self.price_egp),
             "commission_egp": float(self.commission_egp),
             "no_show_fee_egp": float(self.no_show_fee_egp or 0),

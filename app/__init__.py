@@ -257,7 +257,30 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE drivers ADD COLUMN {col} {sqlite_type}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position ensured")
+
+        # Phase 2 ride GPS columns. Nullable so WhatsApp / legacy zone-only
+        # bookings continue to work with these NULL.
+        ride_gps_columns = [
+            ("pickup_lat",  "DOUBLE PRECISION"),
+            ("pickup_lng",  "DOUBLE PRECISION"),
+            ("dropoff_lat", "DOUBLE PRECISION"),
+            ("dropoff_lng", "DOUBLE PRECISION"),
+        ]
+        for col, coltype in ride_gps_columns:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE rides ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text("PRAGMA table_info(rides)")
+                ).fetchall()}
+                if col not in existing:
+                    sqlite_type = "REAL" if coltype == "DOUBLE PRECISION" else coltype
+                    conn.execute(text(
+                        f"ALTER TABLE rides ADD COLUMN {col} {sqlite_type}"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps ensured")
 
 
 def _init_firebase_admin(app):

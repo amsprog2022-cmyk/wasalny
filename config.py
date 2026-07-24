@@ -46,6 +46,18 @@ class Config:
     # code change if it ever leaks.
     MAPTILER_KEY = os.getenv("MAPTILER_KEY", "parhG5kKaSBCSzASEX3O")
 
+    # Distance-based pricing (Phase 2 customer app). Straight-line Haversine
+    # for now — captain can override on arrival for edge cases.
+    PRICING_BASE_EGP   = float(os.getenv("PRICING_BASE_EGP",   "10"))
+    PRICING_PER_KM_EGP = float(os.getenv("PRICING_PER_KM_EGP", "3"))
+    PRICING_MIN_EGP    = float(os.getenv("PRICING_MIN_EGP",    "15"))
+    PRICING_MAX_EGP    = float(os.getenv("PRICING_MAX_EGP",    "500"))
+
+    # GPS matching (Phase 2). How many captains to offer to at once + the
+    # cascading radii we escalate through if nobody's close.
+    GEO_MATCH_TOP_N    = int(os.getenv("GEO_MATCH_TOP_N",       "3"))
+    GEO_MATCH_RADII_KM = os.getenv("GEO_MATCH_RADII_KM",        "3,6,10")
+
     # Business rules (Decisions #10, #14, config §Appendix B)
     WASSALNY_COMMISSION_RATE = os.getenv("WASSALNY_COMMISSION_RATE", "0.15")
     # Fallback price when a zone pair isn't in the pricing matrix. With ~350

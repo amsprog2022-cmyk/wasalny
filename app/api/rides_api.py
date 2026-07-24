@@ -591,15 +591,37 @@ def list_zones():
 @rides_api_bp.post("/rides/quote")
 @jwt_required()
 def rides_quote():
+    """Price quote for a would-be booking.
+
+    Two shapes accepted:
+      Phase 2 GPS:  {pickup_lat, pickup_lng, dropoff_lat, dropoff_lng}
+      Legacy zone:  {from_zone_id, to_zone_id}
+
+    GPS takes precedence when all four coords are present.
+    """
     cid = _customer_id_from_jwt()
     if cid is None:
         return jsonify({"error": "customer_token_required"}), 403
     data = request.json or {}
+
+    plat = data.get("pickup_lat")
+    plng = data.get("pickup_lng")
+    dlat = data.get("dropoff_lat")
+    dlng = data.get("dropoff_lng")
+    if all(v is not None for v in (plat, plng, dlat, dlng)):
+        try:
+            q = pricing_svc.quote_by_coords(
+                cid, float(plat), float(plng), float(dlat), float(dlng),
+            )
+        except (TypeError, ValueError):
+            return jsonify({"error": "coords must be numbers"}), 400
+        return jsonify(q.to_dict())
+
     try:
         from_zone_id = int(data.get("from_zone_id"))
         to_zone_id = int(data.get("to_zone_id"))
     except (TypeError, ValueError):
-        return jsonify({"error": "from_zone_id and to_zone_id required"}), 400
+        return jsonify({"error": "from_zone_id and to_zone_id (or GPS coords) required"}), 400
     q = pricing_svc.quote(cid, from_zone_id, to_zone_id)
     if q is None:
         return jsonify({"error": "no_pricing_for_pair"}), 404
@@ -611,32 +633,68 @@ def rides_quote():
 @rides_api_bp.post("/rides")
 @jwt_required()
 def rides_create():
+    """Create a ride. Same two payload shapes as `/rides/quote`.
+
+    Phase 2 GPS payload will auto-populate `from_zone_id` via reverse-geocode
+    so admin filtering by zone still works.
+    """
     cid = _customer_id_from_jwt()
     if cid is None:
         return jsonify({"error": "customer_token_required"}), 403
     data = request.json or {}
-    try:
-        from_zone_id = int(data.get("from_zone_id"))
-        to_zone_id = int(data.get("to_zone_id"))
-    except (TypeError, ValueError):
-        return jsonify({"error": "from_zone_id and to_zone_id required"}), 400
+
+    plat = data.get("pickup_lat")
+    plng = data.get("pickup_lng")
+    dlat = data.get("dropoff_lat")
+    dlng = data.get("dropoff_lng")
+    has_gps = all(v is not None for v in (plat, plng, dlat, dlng))
+
+    from_zone_id = None
+    to_zone_id = None
+    if not has_gps:
+        try:
+            from_zone_id = int(data.get("from_zone_id"))
+            to_zone_id = int(data.get("to_zone_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "from_zone_id and to_zone_id (or GPS coords) required"}), 400
 
     if not _rate_limit_customer(cid):
         return jsonify({"error": "rate_limited", "retry_after_seconds": 600}), 429
 
     try:
-        ride, pending_ids = ride_lifecycle.create_ride(
-            customer_id=cid,
-            from_zone_id=from_zone_id,
-            to_zone_id=to_zone_id,
-            source="app",
-        )
-    except ValueError as e:
+        kwargs = {"customer_id": cid, "source": "app"}
+        if has_gps:
+            kwargs.update({
+                "pickup_lat":  float(plat), "pickup_lng":  float(plng),
+                "dropoff_lat": float(dlat), "dropoff_lng": float(dlng),
+            })
+        else:
+            kwargs.update({"from_zone_id": from_zone_id, "to_zone_id": to_zone_id})
+        ride, pending_ids = ride_lifecycle.create_ride(**kwargs)
+    except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
-    # Kick off matching asynchronously
     matching.start_matching(ride.id, pending_fee_ids=pending_ids)
     return jsonify(ride.to_dict()), 201
+
+
+@rides_api_bp.get("/rides/place-name")
+@jwt_required()
+def rides_place_name():
+    """Reverse-geocode helper for the customer app's map pin address labels.
+
+    Reads ?lat=…&lng=… query params. Returns {"label": "<free-form arabic>"}
+    or null when Nominatim returned nothing usable. Uses the same 24h Redis
+    cache as resolve_zone so pin-drag doesn't slam the free tier.
+    """
+    try:
+        lat = float(request.args.get("lat"))
+        lng = float(request.args.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat/lng required"}), 400
+    from app.services import reverse_geocode as rg
+    label = rg.resolve_place_name(lat, lng)
+    return jsonify({"label": label})
 
 
 # ---------- read ----------

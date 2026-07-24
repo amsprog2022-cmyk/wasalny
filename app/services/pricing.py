@@ -27,6 +27,9 @@ class Quote:
     pending_fees_egp: Decimal
     total_egp: Decimal
     pending_fee_ids: list[int]
+    # Populated only when the quote came from coordinates (Phase 2). Zone
+    # pair quotes leave this None so the customer app can distinguish.
+    distance_km: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +40,7 @@ class Quote:
             "pending_fees_egp": float(self.pending_fees_egp),
             "total_egp": float(self.total_egp),
             "pending_fee_ids": self.pending_fee_ids,
+            "distance_km": self.distance_km,
         }
 
 
@@ -87,6 +91,45 @@ def quote(customer_id: int, from_zone_id: int, to_zone_id: int) -> Optional[Quot
         pending_fees_egp=pending,
         total_egp=total,
         pending_fee_ids=pending_ids,
+    )
+
+
+def quote_by_coords(
+    customer_id: int,
+    pickup_lat: float,
+    pickup_lng: float,
+    dropoff_lat: float,
+    dropoff_lng: float,
+) -> Quote:
+    """Distance-based quote for a Phase 2 GPS booking.
+
+    Formula: `max(MIN, min(MAX, base + per_km * haversine_km))`. Straight-line
+    distance for now — the captain can override on arrival for edge cases
+    where the road route is much longer than the crow flies.
+    """
+    from app.services.geo import haversine_km
+
+    distance_km = haversine_km(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
+    base   = Decimal(str(current_app.config.get("PRICING_BASE_EGP",   "10")))
+    per_km = Decimal(str(current_app.config.get("PRICING_PER_KM_EGP", "3")))
+    min_p  = Decimal(str(current_app.config.get("PRICING_MIN_EGP",    "15")))
+    max_p  = Decimal(str(current_app.config.get("PRICING_MAX_EGP",    "500")))
+
+    raw = base + per_km * Decimal(str(distance_km))
+    ride_price = min(max_p, max(min_p, raw)).quantize(Decimal("0.01"))
+    commission = (ride_price * _commission_rate()).quantize(Decimal("0.01"))
+    pending, pending_ids = get_pending_fees(customer_id)
+    total = (ride_price + pending).quantize(Decimal("0.01"))
+
+    return Quote(
+        from_zone_id=0,   # populated on Ride row by caller via reverse-geocode
+        to_zone_id=0,
+        ride_price_egp=ride_price,
+        commission_egp=commission,
+        pending_fees_egp=pending,
+        total_egp=total,
+        pending_fee_ids=pending_ids,
+        distance_km=round(distance_km, 3),
     )
 
 

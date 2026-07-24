@@ -171,3 +171,43 @@ def default_zone() -> Optional[Zone]:
     if z is not None:
         return z
     return Zone.query.filter_by(is_active=True).order_by(Zone.id.asc()).first()
+
+
+def resolve_place_name(lat: float, lng: float) -> Optional[str]:
+    """Return a short Arabic display string like 'شارع 45، الرملة، بنها' for
+    a customer-app pin. Reuses the same 24h Redis cache as `resolve_zone`
+    so drag interactions don't burn the free tier.
+
+    Returns None if Nominatim gave us nothing usable.
+    """
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    label_key = f"geo:label:{lat:.3f},{lng:.3f}"
+    cached = r.get(label_key)
+    if cached is not None:
+        raw = cached if isinstance(cached, str) else cached.decode("utf-8", "ignore")
+        # Empty string = "we already tried and got nothing" — cache negative too.
+        return raw or None
+
+    resp = _nominatim_reverse(lat, lng)
+    if not resp:
+        try:
+            r.setex(label_key, CACHE_TTL_SECONDS, "")
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    candidates = [c for c in _extract_candidate_names(resp) if c]
+    # Prefer Nominatim's own `display_name` (already comma-separated, most
+    # specific first). Truncate to first 3 tokens so we don't render a
+    # 10-part address.
+    display = (resp.get("display_name") or "").strip()
+    if display:
+        label = "، ".join([p.strip() for p in display.split(",")[:3] if p.strip()])
+    else:
+        label = "، ".join(candidates[:3]) if candidates else ""
+
+    try:
+        r.setex(label_key, CACHE_TTL_SECONDS, label)
+    except Exception:  # noqa: BLE001
+        pass
+    return label or None
