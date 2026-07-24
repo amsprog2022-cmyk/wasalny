@@ -280,7 +280,27 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE rides ADD COLUMN {col} {sqlite_type}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps ensured")
+
+        # Phase 2.5 reverse-geocoded address strings for the trip UI.
+        # Nullable — populated on ride create for GPS bookings only.
+        ride_address_columns = [
+            ("pickup_address",  "TEXT"),
+            ("dropoff_address", "TEXT"),
+        ]
+        for col, coltype in ride_address_columns:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE rides ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text("PRAGMA table_info(rides)")
+                ).fetchall()}
+                if col not in existing:
+                    conn.execute(text(
+                        f"ALTER TABLE rides ADD COLUMN {col} {coltype}"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses ensured")
 
 
 def _init_firebase_admin(app):

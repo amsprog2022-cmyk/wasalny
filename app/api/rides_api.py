@@ -105,16 +105,25 @@ def driver_change_password():
 @rides_api_bp.get("/driver/active-ride")
 @jwt_required()
 def driver_active_ride():
-    """Return the captain's current in-flight ride, if any.
+    """Return the captain's current state on cold-start / resume.
 
-    Used by the app on cold-start to recover state when the captain force-quit
-    mid-trip and reopens — otherwise the home screen shows nothing and the
-    trip appears lost. Server truth beats local state.
+    Three cases in priority order:
+      1. Assigned or in-progress trip — return with is_offer=false.
+      2. Pending trip offer (broadcasting ride where captain is in the
+         Redis offered_to set) — return with is_offer=true so the app
+         routes to TripOfferScreen instead of TripInProgressScreen.
+      3. Nothing — {"ride": null}.
+
+    Fixes the "app was killed while the FCM push arrived, opened it,
+    says 'no trip'" bug: captains never lose visibility of an active
+    or offered ride regardless of app lifecycle.
     """
     did = _driver_id_from_jwt()
     if did is None:
         return jsonify({"error": "driver_token_required"}), 403
-    ride = (
+
+    # (1) Assigned / started — winner already picked.
+    active = (
         Ride.query.filter(
             Ride.driver_id == did,
             Ride.status.in_(("assigned", "started")),
@@ -122,9 +131,32 @@ def driver_active_ride():
         .order_by(Ride.id.desc())
         .first()
     )
-    if ride is None:
-        return jsonify({"ride": None})
-    return jsonify({"ride": ride.to_dict(include_customer_contact=True)})
+    if active is not None:
+        return jsonify({
+            "ride": active.to_dict(include_customer_contact=True),
+            "is_offer": False,
+        })
+
+    # (2) Broadcasting offer where this captain is in the offered_to set.
+    from app.extensions import get_redis
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    pending = (
+        Ride.query.filter(Ride.status == "broadcasting")
+        .order_by(Ride.id.desc())
+        .limit(10)     # cap: typically <5 broadcasting rides at any moment
+        .all()
+    )
+    for ride in pending:
+        try:
+            if r.sismember(f"broadcast:{ride.id}:offered_to", str(did)):
+                return jsonify({
+                    "ride": ride.to_dict(include_customer_contact=True),
+                    "is_offer": True,
+                })
+        except Exception:  # noqa: BLE001
+            continue
+
+    return jsonify({"ride": None, "is_offer": False})
 
 
 @rides_api_bp.get("/driver/earnings")

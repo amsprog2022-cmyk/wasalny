@@ -113,14 +113,31 @@ def create_ride(
 
     # Auto-resolve pickup zone from GPS so admin filters + reports still work
     # even though matching now uses coordinates.
+    pickup_address = None
+    dropoff_address = None
     if has_pickup_gps and from_zone_id is None:
         try:
             from app.services import reverse_geocode as rg
             zone = rg.resolve_zone(pickup_lat, pickup_lng) or rg.default_zone()
             if zone is not None:
                 from_zone_id = zone.id
+            pickup_address = rg.resolve_place_name(pickup_lat, pickup_lng)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("pickup reverse-geocode failed: %s", e)
+
+    # Same for the destination — customers picked a real point on the map,
+    # so the captain should see the resolved address + zone (fixes the
+    # WhatsApp-style "no destination" placeholder that Phase 2 accidentally
+    # inherited by leaving to_zone_id NULL).
+    if has_dropoff_gps and to_zone_id is None:
+        try:
+            from app.services import reverse_geocode as rg
+            zone = rg.resolve_zone(dropoff_lat, dropoff_lng)
+            if zone is not None:
+                to_zone_id = zone.id
+            dropoff_address = rg.resolve_place_name(dropoff_lat, dropoff_lng)
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("dropoff reverse-geocode failed: %s", e)
 
     if from_zone_id is None:
         # Last-resort: use the default zone so the NOT-NULL column is satisfied.
@@ -168,6 +185,8 @@ def create_ride(
         pickup_lng=pickup_lng,
         dropoff_lat=dropoff_lat,
         dropoff_lng=dropoff_lng,
+        pickup_address=pickup_address,
+        dropoff_address=dropoff_address,
         price_egp=price,
         commission_egp=commission,
         no_show_fee_egp=pending_fees,

@@ -35,6 +35,13 @@ class Ride(db.Model):
     dropoff_lat = db.Column(db.Float)
     dropoff_lng = db.Column(db.Float)
 
+    # Reverse-geocoded free-form address strings shown in the trip UI
+    # (both apps) instead of the coarse zone name. Populated on create for
+    # GPS rides; NULL for WhatsApp / legacy zone-only rides (UI falls back
+    # to the zone name in that case).
+    pickup_address  = db.Column(db.Text)
+    dropoff_address = db.Column(db.Text)
+
     # Money — computed at create time when both zones are known. For WhatsApp
     # rides this starts as 0 and captain overrides via /rides/<id>/price.
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
@@ -79,6 +86,8 @@ class Ride(db.Model):
             "pickup_lng":  self.pickup_lng,
             "dropoff_lat": self.dropoff_lat,
             "dropoff_lng": self.dropoff_lng,
+            "pickup_address":  self.pickup_address,
+            "dropoff_address": self.dropoff_address,
             "price_egp": float(self.price_egp),
             "commission_egp": float(self.commission_egp),
             "no_show_fee_egp": float(self.no_show_fee_egp or 0),
