@@ -10,7 +10,7 @@
 //
 // State lives in two Maps (driverId → marker, rideId → row) so upserts are O(1).
 (function () {
-  const { maptilerKey, benhaCenter } = window.WASSALNY || {};
+  const { benhaCenter } = window.WASSALNY || { benhaCenter: [31.1836, 30.4560] };
 
   // -------- state --------
   const markers = new Map();   // driver_id -> maplibregl.Marker
@@ -18,22 +18,29 @@
   const rides = new Map();     // ride_id -> ride payload
 
   // -------- map --------
+  // Use raster OSM tiles — free, no API key, no HTTP-referrer allowlist to
+  // maintain. Same reasoning as the Flutter captain app: reliability > fancy
+  // vector tiles.
   const map = new maplibregl.Map({
     container: 'live-map',
-    style: maptilerKey
-      ? `https://api.maptiler.com/maps/streets-v2/style.json?key=${maptilerKey}`
-      : {
-          version: 8,
-          sources: {
-            osm: {
-              type: 'raster',
-              tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-              tileSize: 256,
-              attribution: '© OpenStreetMap contributors',
-            },
-          },
-          layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'raster',
+          tiles: [
+            'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          ],
+          tileSize: 256,
+          minzoom: 0,
+          maxzoom: 19,
+          attribution: '© OpenStreetMap contributors',
         },
+      },
+      layers: [{ id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }],
+    },
     center: benhaCenter,
     zoom: 12,
     attributionControl: true,
