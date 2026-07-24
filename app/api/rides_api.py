@@ -759,15 +759,29 @@ def rides_read(ride_id: int):
 @rides_api_bp.post("/rides/<int:ride_id>/cancel")
 @jwt_required()
 def rides_cancel(ride_id: int):
+    """Customer cancellation OR captain force-cancel (stuck-state escape).
+
+    A captain can only cancel a ride they're currently assigned to. Reason
+    string bubbles into the RideStatusEvent audit log so ops can see why.
+    """
     ride = db.session.get(Ride, ride_id)
     if ride is None:
         return jsonify({"error": "not_found"}), 404
+
     cid = _customer_id_from_jwt()
-    if cid is None or ride.customer_id != cid:
+    did = _driver_id_from_jwt()
+    actor: str
+    if cid is not None and ride.customer_id == cid:
+        actor = "customer"
+    elif did is not None and ride.driver_id == did:
+        actor = "driver"
+    else:
         return jsonify({"error": "forbidden"}), 403
-    reason = (request.json or {}).get("reason") or "customer_cancelled"
+
+    default_reason = "customer_cancelled" if actor == "customer" else "driver_cancelled"
+    reason = (request.json or {}).get("reason") or default_reason
     try:
-        ride_lifecycle.cancel(ride, actor="customer", reason=reason)
+        ride_lifecycle.cancel(ride, actor=actor, reason=reason)
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
     return jsonify(ride.to_dict(include_customer_contact=True))
