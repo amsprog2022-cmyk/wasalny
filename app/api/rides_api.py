@@ -149,9 +149,16 @@ def driver_active_ride():
     for ride in pending:
         try:
             if r.sismember(f"broadcast:{ride.id}:offered_to", str(did)):
+                # Remaining seconds in this offer window = TTL of the
+                # offered_to set. Keeps the app countdown honest instead
+                # of a hardcoded 30 for a 10s window.
+                ttl = r.ttl(f"broadcast:{ride.id}:offered_to")
+                window = int(current_app.config.get("BROADCAST_ACCEPT_WINDOW_SECONDS", 10))
+                expires_in = ttl if isinstance(ttl, int) and ttl > 0 else window
                 return jsonify({
                     "ride": ride.to_dict(include_customer_contact=True),
                     "is_offer": True,
+                    "offer_expires_in": min(expires_in, window),
                 })
         except Exception:  # noqa: BLE001
             continue
@@ -729,6 +736,21 @@ def rides_place_name():
     return jsonify({"label": label})
 
 
+@rides_api_bp.get("/rides/search-places")
+@jwt_required()
+def rides_search_places():
+    """Forward-geocode a destination typed by the customer.
+
+    ?q=<free text> → [{"label", "lat", "lng"}, ...] biased to Qalyubia +
+    Greater Cairo. Backed by Nominatim /search with a 24h Redis cache.
+    """
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 3:
+        return jsonify({"error": "query_too_short"}), 400
+    from app.services import reverse_geocode as rg
+    return jsonify(rg.search_places(q))
+
+
 # ---------- read ----------
 
 @rides_api_bp.get("/rides/<int:ride_id>")
@@ -801,7 +823,21 @@ def rides_accept(ride_id: int):
     if ride.status != "broadcasting":
         return jsonify({"error": "not_broadcasting", "status": ride.status}), 409
     if matching.try_claim(ride_id, did):
-        return jsonify({"claimed": True, "ride_id": ride_id})
+        # try_claim only wins the Redis locks — the matching greenlet does
+        # the actual assign after the pubsub ping. Wait briefly so we can
+        # hand the app a ride that's already 'assigned'; otherwise the app
+        # renders a stale 'broadcasting' trip screen with no buttons.
+        for _ in range(15):          # ≤3s
+            time.sleep(0.2)          # eventlet-patched: yields greenlet
+            db.session.expire(ride)
+            if ride.status == "assigned" and ride.driver_id == did:
+                break
+        payload = ride.to_dict(include_customer_contact=True)
+        if payload.get("status") == "broadcasting":
+            # Assign still in flight — let the app render optimistically.
+            payload["status"] = "assigned"
+            payload["driver_id"] = did
+        return jsonify({"claimed": True, "ride_id": ride_id, "ride": payload})
     return jsonify({"claimed": False, "error": "already_taken"}), 409
 
 

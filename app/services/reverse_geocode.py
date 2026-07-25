@@ -211,3 +211,72 @@ def resolve_place_name(lat: float, lng: float) -> Optional[str]:
     except Exception:  # noqa: BLE001
         pass
     return label or None
+
+
+NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+
+# Bias box covering Qalyubia + Greater Cairo (left,top,right,bottom lng/lat).
+# bounded=0 means "prefer results here" rather than "only results here", so
+# a trip from Shubra El Kheima or an occasional Cairo destination still works.
+SEARCH_VIEWBOX = "30.90,30.60,31.60,29.90"
+
+
+def search_places(query: str, limit: int = 6) -> list[dict]:
+    """Forward-geocode free text into candidate destinations.
+
+    Returns [{"label": str, "lat": float, "lng": float}, ...] biased to
+    Qalyubia + Greater Cairo, Arabic labels. Cached 24h per normalized
+    query so repeated typing sessions don't burn the Nominatim free tier.
+    """
+    q = (query or "").strip()
+    if len(q) < 3:
+        return []
+
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    cache_key = f"geo:search:{_normalize(q)}"
+    cached = r.get(cache_key)
+    if cached is not None:
+        raw = cached if isinstance(cached, str) else cached.decode("utf-8", "ignore")
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+
+    results: list[dict] = []
+    try:
+        resp = requests.get(
+            NOMINATIM_SEARCH_URL,
+            params={
+                "q": q,
+                "format": "jsonv2",
+                "accept-language": "ar",
+                "countrycodes": "eg",
+                "viewbox": SEARCH_VIEWBOX,
+                "bounded": 0,
+                "limit": limit,
+                "addressdetails": 0,
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=6,
+        )
+        if resp.status_code == 200:
+            for item in resp.json():
+                try:
+                    lat = float(item["lat"])
+                    lng = float(item["lon"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                display = (item.get("display_name") or "").strip()
+                label = "، ".join(
+                    [p.strip() for p in display.split(",")[:3] if p.strip()]
+                )
+                if label:
+                    results.append({"label": label, "lat": lat, "lng": lng})
+    except (requests.RequestException, ValueError):
+        return []
+
+    try:
+        r.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(results, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        pass
+    return results

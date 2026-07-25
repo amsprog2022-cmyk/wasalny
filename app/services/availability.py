@@ -213,7 +213,17 @@ def available_drivers_in_zone(zone_id: int) -> list[int]:
 
 
 def count_available_in_zone(zone_id: int) -> int:
-    return len(available_drivers_in_zone(zone_id))
+    """Fast approximate count — trims stale entries then ZCARDs the zset.
+
+    Deliberately skips the hash-scan fallback that `available_drivers_in_zone`
+    does: counting is used for zone *ranking* (pick the busiest zone), where
+    an approximate number is fine and the scan would cost O(all drivers) per
+    zone — with ~350 zones that's a Redis meltdown under load.
+    """
+    r = _r()
+    long_stale_cutoff = time.time() - max(_hb_timeout(), 3600)
+    r.zremrangebyscore(k_zone(zone_id), min="-inf", max=long_stale_cutoff)
+    return int(r.zcard(k_zone(zone_id)))
 
 
 def zone_counts(zone_ids: Iterable[int]) -> dict[int, int]:

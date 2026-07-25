@@ -230,6 +230,14 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     # Mark driver busy in Redis — they can't take more offers.
     av.set_available(driver_id, False)
 
+    # Persist the driver's ride lock for the trip duration. try_claim only
+    # holds it 15s (accept-race window); without this a captain could win a
+    # second ride mid-trip. Deleted on complete/cancel/no_show; 6h TTL is a
+    # crash safety-net so a dead server never bricks a captain forever.
+    from app.extensions import get_redis
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    r.set(f"driver:{driver_id}:current_ride", str(ride.id), ex=6 * 3600)
+
     db.session.commit()
 
     driver = db.session.get(Driver, driver_id)

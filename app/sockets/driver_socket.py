@@ -138,11 +138,27 @@ class DriverNamespace(Namespace):
         # broken emit never affects the tracking pipeline.
         try:
             from app.models.ride import Ride
+            from app.extensions import get_redis
             driver = db.session.get(Driver, driver_id)
-            active_ride = Ride.query.filter(
-                Ride.driver_id == driver_id,
-                Ride.status.in_(("assigned", "started")),
-            ).first()
+            # Cheap on-trip check: the ride_lifecycle keeps
+            # driver:{id}:current_ride set for the whole trip. Idle captains
+            # (the majority) cost one Redis GET per ping instead of a
+            # status-IN table scan — matters once the fleet grows.
+            active_ride = None
+            lock = get_redis(current_app.config.get("REDIS_URL")).get(
+                f"driver:{driver_id}:current_ride"
+            )
+            if lock:
+                try:
+                    candidate = db.session.get(Ride, int(lock))
+                except (TypeError, ValueError):
+                    candidate = None
+                if (
+                    candidate is not None
+                    and candidate.driver_id == driver_id
+                    and candidate.status in ("assigned", "started")
+                ):
+                    active_ride = candidate
             socketio.emit(
                 "driver_position_update",
                 {
@@ -155,6 +171,13 @@ class DriverNamespace(Namespace):
                 },
                 namespace="/inbox",
             )
+            if active_ride is not None:
+                socketio.emit(
+                    "captain_position",
+                    {"ride_id": active_ride.id, "lat": lat, "lng": lng},
+                    namespace="/customer",
+                    room=f"customer:{active_ride.customer_id}",
+                )
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("driver_position broadcast failed: %s", e)
 
