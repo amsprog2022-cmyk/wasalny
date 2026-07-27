@@ -300,7 +300,33 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE rides ADD COLUMN {col} {coltype}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses ensured")
+
+        # Phase 3.1 — WhatsApp GPS booking session state. We stash the free
+        # text + geocoded coords across turns so a customer can send pickup
+        # in one message and dropoff in the next.
+        ai_session_gps_columns = [
+            ("partial_pickup_text",   "VARCHAR(255)"),
+            ("partial_pickup_lat",    "DOUBLE PRECISION"),
+            ("partial_pickup_lng",    "DOUBLE PRECISION"),
+            ("partial_dropoff_text",  "VARCHAR(255)"),
+            ("partial_dropoff_lat",   "DOUBLE PRECISION"),
+            ("partial_dropoff_lng",   "DOUBLE PRECISION"),
+        ]
+        for col, coltype in ai_session_gps_columns:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE ai_sessions ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text("PRAGMA table_info(ai_sessions)")
+                ).fetchall()}
+                if col not in existing:
+                    sqlite_type = "REAL" if coltype == "DOUBLE PRECISION" else coltype
+                    conn.execute(text(
+                        f"ALTER TABLE ai_sessions ADD COLUMN {col} {sqlite_type}"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps ensured")
 
 
 def _init_firebase_admin(app):

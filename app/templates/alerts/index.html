@@ -73,18 +73,42 @@
           {% for a in no_driver %}
             {% set r = rides.get(a.ride_id) %}
             {% set c = customers.get(a.customer_id) %}
-            <tr class="border-t border-white/5">
-              <td class="px-4 py-3 text-text-muted">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+            {% set payload = parse_json(a.payload_json or '{}') %}
+            <tr class="border-t border-white/5 align-top">
+              <td class="px-4 py-3 text-text-muted whitespace-nowrap">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
               <td class="px-4 py-3">
                 {% if a.ride_id %}
                   <a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">رحلة #{{ a.ride_id }}</a>
                   {% if r %}
                     <div class="text-xs text-text-muted">
-                      {{ r.from_zone.name_ar if r.from_zone else '—' }}
-                      {% if r.to_zone %} ← {{ r.to_zone.name_ar }}{% endif %}
+                      {{ r.pickup_address or (r.from_zone.name_ar if r.from_zone else '—') }}
+                      {% if r.dropoff_address or r.to_zone %}
+                        ← {{ r.dropoff_address or r.to_zone.name_ar }}
+                      {% endif %}
                     </div>
                   {% endif %}
                 {% else %} — {% endif %}
+                {% if c and c.wa_id %}
+                  <div class="text-xs text-text-muted mt-1">
+                    📞 <a href="tel:+{{ c.wa_id }}" class="text-primary hover:underline">+{{ c.wa_id }}</a>
+                    {% if payload.pickup_lat and payload.pickup_lng %}
+                      · <a href="https://www.openstreetmap.org/?mlat={{ payload.pickup_lat }}&mlon={{ payload.pickup_lng }}#map=17/{{ payload.pickup_lat }}/{{ payload.pickup_lng }}"
+                           target="_blank" class="text-primary hover:underline">📍 خريطة</a>
+                    {% endif %}
+                    {% if payload.source %} · <span>{{ payload.source }}</span>{% endif %}
+                  </div>
+                {% endif %}
+                <details class="mt-2">
+                  <summary class="text-xs text-primary cursor-pointer">رد على العميل بواتساب</summary>
+                  <form method="post" action="{{ url_for('alerts.reply_to_customer', alert_id=a.id) }}" class="mt-2 space-y-2">
+                    <textarea name="body" rows="2" required
+                              placeholder="مثلاً: أهلاً، لسه بندور لك على كابتن قريب، دقيقتين بس..."
+                              class="w-full bg-surface-raised p-2 rounded text-sm"></textarea>
+                    <div class="flex gap-2">
+                      <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">ابعت</button>
+                    </div>
+                  </form>
+                </details>
               </td>
               <td class="px-4 py-3 text-left whitespace-nowrap">
                 {% if r %}

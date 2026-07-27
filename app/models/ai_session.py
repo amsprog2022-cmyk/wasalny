@@ -21,8 +21,21 @@ class AiSession(db.Model):
 
     status = db.Column(db.String(16), default="parsing", nullable=False)
 
+    # Legacy zone-based partial state — still populated when Gemini happens
+    # to emit a slug, but the GPS pipeline reads the text/lat/lng fields
+    # below and treats the slug as informational only.
     partial_pickup_slug = db.Column(db.String(60))
     partial_dropoff_slug = db.Column(db.String(60))
+
+    # GPS booking partial state (Phase 3.1). We stash whatever we've
+    # extracted so far across turns until pickup+dropoff coords are
+    # confirmed, then create_ride is called.
+    partial_pickup_text = db.Column(db.String(255))
+    partial_pickup_lat = db.Column(db.Float)
+    partial_pickup_lng = db.Column(db.Float)
+    partial_dropoff_text = db.Column(db.String(255))
+    partial_dropoff_lat = db.Column(db.Float)
+    partial_dropoff_lng = db.Column(db.Float)
     # How many times we've asked the customer for more info in this session.
     # After the second unsuccessful clarify we escalate to a human admin
     # rather than badger them a third time.

@@ -364,9 +364,10 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
 
 
 def _emit_no_driver_alert(ride: Ride) -> None:
-    """Create the admin AdminAlert(kind=no_driver) + live-push to /inbox.
-    Best-effort — swallow failures so a broken emit doesn't affect the
-    ride cancellation that already happened."""
+    """Create the admin AdminAlert(kind=no_driver) + live-push to /inbox +
+    (for WhatsApp rides) message the customer telling them the admin will
+    reach out. Best-effort — swallow failures so a broken emit doesn't
+    affect the ride cancellation that already happened."""
     try:
         from app.models.ai_session import AdminAlert
         alert = AdminAlert(
@@ -379,6 +380,8 @@ def _emit_no_driver_alert(ride: Ride) -> None:
                     "to_zone_ar": (ride.to_zone.name_ar if ride.to_zone else None),
                     "pickup_lat": ride.pickup_lat,
                     "pickup_lng": ride.pickup_lng,
+                    "pickup_address": ride.pickup_address,
+                    "dropoff_address": ride.dropoff_address,
                     "source": ride.source,
                     "customer_wa_id": (ride.customer.wa_id if ride.customer else None),
                 },
@@ -401,6 +404,27 @@ def _emit_no_driver_alert(ride: Ride) -> None:
         )
     except Exception as e:  # noqa: BLE001
         current_app.logger.warning("no_driver alert create failed: %s", e)
+
+    # WhatsApp customer escalation — tell them a human will help so they're
+    # not left in silence after the last "بندور على كابتن" reply.
+    if ride.source == "whatsapp" and ride.customer is not None and ride.customer.wa_id:
+        try:
+            from app.services import whatsapp as wa
+            from app.services import whatsapp_booking
+            body = (
+                "😔 معلش، مفيش كابتن متاح دلوقتي في المنطقة دي. "
+                "الأدمن هيتواصل معاك ويشوفلك حل. "
+                "لو مش عايز تكمل، رد بكلمة \"إلغاء\"."
+            )
+            resp = wa.send_text(ride.customer.wa_id, body)
+            wa_msg_id = None
+            if isinstance(resp, dict):
+                wa_msg_id = (resp.get("messages") or [{}])[0].get("id")
+            whatsapp_booking._persist_outbound(
+                ride.customer, body, msg_type="text", wa_message_id=wa_msg_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("no_driver customer notice failed: %s", e)
 
 
 def start_matching(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:

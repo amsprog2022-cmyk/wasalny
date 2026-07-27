@@ -57,18 +57,32 @@ def receive():
                     log.exception("Failed to handle incoming message %s", msg.get("id"))
                     continue
 
-                # Route customer text messages through the AI booking pipeline.
-                # Drivers use the app directly, so their inbound messages stay in
-                # the human agent inbox only.
-                if (
+                # Route customer text + location messages through the AI
+                # booking pipeline. Drivers use the app directly, so their
+                # inbound messages stay in the human agent inbox only.
+                is_customer_msg = (
                     persisted is not None
-                    and persisted.msg_type == "text"
-                    and persisted.body
                     and persisted.conversation
                     and persisted.conversation.kind == "customer"
                     and persisted.conversation.customer is not None
-                ):
-                    _spawn_ai_booking(persisted.conversation.customer.id, persisted.body)
+                )
+                if is_customer_msg and persisted.msg_type == "text" and persisted.body:
+                    _spawn_ai_booking(
+                        persisted.conversation.customer.id,
+                        {"kind": "text", "body": persisted.body},
+                    )
+                elif is_customer_msg and msg.get("type") == "location":
+                    loc = msg.get("location") or {}
+                    try:
+                        lat = float(loc.get("latitude"))
+                        lng = float(loc.get("longitude"))
+                    except (TypeError, ValueError):
+                        lat = lng = None
+                    if lat is not None and lng is not None:
+                        _spawn_ai_booking(
+                            persisted.conversation.customer.id,
+                            {"kind": "location", "lat": lat, "lng": lng},
+                        )
 
             for status in value.get("statuses", []):
                 try:
@@ -80,8 +94,12 @@ def receive():
     return "", 200
 
 
-def _spawn_ai_booking(customer_id: int, body: str) -> None:
-    """Run the Gemini booking pipeline in a greenlet so the webhook returns fast."""
+def _spawn_ai_booking(customer_id: int, payload: dict) -> None:
+    """Run the Gemini booking pipeline in a greenlet so the webhook returns
+    fast. `payload` is one of:
+      {"kind": "text", "body": "<user message>"}
+      {"kind": "location", "lat": <float>, "lng": <float>}
+    """
     app = current_app._get_current_object()
 
     def _work():
@@ -92,7 +110,7 @@ def _spawn_ai_booking(customer_id: int, body: str) -> None:
             if customer is None:
                 return
             try:
-                whatsapp_booking.process_incoming(customer, body)
+                whatsapp_booking.process_incoming(customer, payload)
             except Exception:
                 app.logger.exception("whatsapp_booking failed for customer %s", customer_id)
 

@@ -39,6 +39,11 @@ class ParseResult:
     intent: str
     from_zone_slug: Optional[str]
     to_zone_slug: Optional[str]
+    # Free-text place names the AI extracted from the customer message.
+    # These are what the GPS booking pipeline geocodes via Nominatim.
+    # Zone slugs are kept as a legacy fallback for existing sessions.
+    pickup_text: Optional[str]
+    dropoff_text: Optional[str]
     confidence: float
     reply_ar: str
     raw_response: str
@@ -50,6 +55,8 @@ class ParseResult:
             "intent": self.intent,
             "from_zone_slug": self.from_zone_slug,
             "to_zone_slug": self.to_zone_slug,
+            "pickup_text": self.pickup_text,
+            "dropoff_text": self.dropoff_text,
             "confidence": self.confidence,
             "reply_ar": self.reply_ar,
             "used_fallback": self.used_fallback,
@@ -110,14 +117,16 @@ def _build_prompt(
   - "unknown"       → مش فاهم أو الرسالة مبهمة.
 
 قواعد مهمة للحجز عبر واتساب (طلبات قصيرة، سؤال أو اتنين على الأكتر):
-  - **أهم قاعدة**: لو العميل ذكر أي حي/منطقة/مكان انطلاق أو وصول → intent="book_ride" فوراً.
-  - from_zone_slug و to_zone_slug: استخرج كل واحد فيهم لو موجود في رسالة العميل ولو في الرسايل السابقة.
-  - لو المكان اللي ذكره العميل مش موجود في قايمة الأماكن المتاحة → خلي الحقل المناسب = null. (الكابتن هيسأل العميل عن التفاصيل).
-  - لو العميل قال "عايز كابتن" أو "عايز رحلة" أو "بدي أروح" من غير ما يذكر أي مكان → intent="clarify" و reply_ar = "🌟 تحب تروح فين؟" (اسأل عن الوجهة الأول).
-  - لو ذكر الوجهة بس ومكانه لأ → intent="clarify" و reply_ar = "تمام 🚗 وحضرتك دلوقتي فين؟".
+  - **أهم قاعدة**: لو العميل ذكر أي مكان انطلاق (pickup) أو وصول (dropoff) → intent="book_ride" فوراً.
+  - **pickup_text**: استخرج مكان الاستقلال زي ما كتبه العميل بالظبط (مثال: "محطة القطار بنها"، "مستشفى بنها التخصصي"، "شارع النصر جنب مسجد النور"، "بجانب مدرسة كذا"). ماتحاولش تختصر أو تحوله لـ slug — الباك اند هيبحث عنه في الخريطة بنفسه.
+  - **dropoff_text**: نفس الحكاية — استخرج الوجهة زي ما هي.
+  - **from_zone_slug / to_zone_slug**: اتركهم null دلوقتي، الباك اند مبقاش بيعتمد عليهم.
+  - لو العميل قال "عايز كابتن" أو "عايز رحلة" من غير ما يذكر أي مكان → intent="clarify" و reply_ar = "🌟 تحب تروح فين؟".
+  - لو ذكر الوجهة بس ومكانه لأ → intent="clarify" و reply_ar = "تمام 🚗 وحضرتك دلوقتي فين؟ لو صعب توصف مكانك اكتفِ ببعت 📍 من الواتس (📎 → Location).".
+  - الخدمة متاحة في بنها والقليوبية والقاهرة الكبرى بس. لو العميل عايز يسافر خارج ده (إسكندرية، أسوان، إلخ) → intent="chat" واعتذر بأدب.
   - ماتكررش الأسئلة. لو مش عارف تحدد قصده أبدًا → intent="unknown" (البرنامج هيحوله لموظف).
 
-المناطق المتاحة (استخدم فقط slug من هذه القائمة):
+للمرجعية بس، ده بعض المناطق المخدومة (اتركهم null في الـ slug، بس ممكن تستخدمهم لتفهم مصر أفضل):
 {zone_lines}
 {prior_line}{ride_line}
 رسالة العميل:
@@ -134,8 +143,10 @@ def _build_prompt(
 
 أرجع JSON فقط (بدون أي شرح) بالتنسيق التالي:
 {{"intent": "<one of the intents above>",
-  "from_zone_slug": "<slug or null>",
-  "to_zone_slug":   "<slug or null>",
+  "pickup_text":   "<اسم مكان الاستقلال زي ما كتبه العميل، أو null>",
+  "dropoff_text":  "<اسم الوجهة زي ما كتبها العميل، أو null>",
+  "from_zone_slug": null,
+  "to_zone_slug":   null,
   "confidence": 0.0-1.0,
   "reply_ar": "<نص الرد لو intent مش book_ride>",
   "complaint_summary": "<ملخص الشكوى بالعربي لو intent = complaint>"}}
@@ -227,6 +238,8 @@ def parse_message(
                 intent="unknown",
                 from_zone_slug=None,
                 to_zone_slug=None,
+                pickup_text=None,
+                dropoff_text=None,
                 confidence=0.0,
                 reply_ar="",
                 raw_response=raw,
@@ -236,6 +249,8 @@ def parse_message(
             intent=str(parsed.get("intent") or "unknown"),
             from_zone_slug=parsed.get("from_zone_slug") or None,
             to_zone_slug=parsed.get("to_zone_slug") or None,
+            pickup_text=(parsed.get("pickup_text") or None),
+            dropoff_text=(parsed.get("dropoff_text") or None),
             confidence=float(parsed.get("confidence") or 0.0),
             reply_ar=str(parsed.get("reply_ar") or ""),
             raw_response=raw,
@@ -247,6 +262,8 @@ def parse_message(
             intent="unknown",
             from_zone_slug=None,
             to_zone_slug=None,
+            pickup_text=None,
+            dropoff_text=None,
             confidence=0.0,
             reply_ar="",
             raw_response=str(e),

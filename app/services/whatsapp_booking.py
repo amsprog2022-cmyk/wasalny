@@ -1,22 +1,29 @@
-"""WhatsApp booking pipeline — customer message → Gemini → ride created.
+"""WhatsApp booking pipeline — customer message → Gemini → GPS ride created.
 
 Called from the webhook whenever an inbound customer message lands. This is
 the second entry point into `create_ride`; the first is the mobile app.
 
-Flow:
+Flow (Phase 3.1, GPS-first):
   1. Reuse or open an AiSession for this wa_id.
-  2. Ask Gemini to parse the message (with the session's prior partial state).
-  3. Decide:
-     - book_ride + both zones + confidence >= 0.55 → send "booked" sticker
-       IMMEDIATELY, then create ride, then ack with details
-     - book_ride but missing a zone → save partial, ask a follow-up question
-     - chat  → send Gemini's conversational reply as a friendly Wassalny agent
-     - clarify → send reply_ar (booking-adjacent follow-up question)
-     - unknown / low confidence / error → open admin handoff alert
+  2. If the message is a WhatsApp location pin, treat it as confident pickup
+     coords immediately (skip Gemini).
+  3. Cancel keyword check first — if the customer has an active broadcasting
+     ride and says "إلغاء" / "الغي" / "cancel", cancel and confirm.
+  4. Otherwise ask Gemini to parse the message. Gemini returns pickup_text
+     and dropoff_text (free-form Arabic place names).
+  5. Geocode dropoff_text best-effort (any hit is fine — captain confirms
+     with customer on arrival).
+  6. Geocode pickup_text with `geocode_pickup` — confident hits (landmarks,
+     tight bbox, single result) become the pickup coords. Ambiguous hits
+     trigger a "please send a 📍 pin" reply instead of a bad match.
+  7. Once we have pickup coords + at least a dropoff text/coords → call
+     ride_lifecycle.create_ride with lat/lng and send a proactive
+     "بندور على كابتن" WhatsApp reply.
 """
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -29,9 +36,9 @@ from app.models.customer import Customer
 from app.models.gemini_call import GeminiCallLog
 from app.models.message import Message
 from app.models.ride import Ride
-from app.models.zone import Zone
 from app.services import ai_parser
 from app.services import rate_limit
+from app.services import reverse_geocode as rg
 from app.services import ride_lifecycle
 from app.services import matching
 from app.services import stickers as stickers_svc
@@ -40,6 +47,13 @@ from app.services.whatsapp import WhatsAppError
 
 
 MIN_CONFIDENCE = 0.55
+
+# Customer said "cancel my ride" via WhatsApp. Broad enough to catch common
+# Egyptian spellings without matching casual chit-chat.
+_CANCEL_KEYWORDS_RE = re.compile(
+    r"^\s*(الغاء|إلغاء|الغي|إلغي|كنسل|cancel)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _ttl_minutes() -> int:
@@ -168,10 +182,17 @@ def _open_handoff(
     if session:
         session.status = "handoff"
         # Roll session partials into the alert payload so admins have context
-        # when they open the manual-assign dialog.
+        # when they open the manual-assign dialog. Include the new GPS
+        # partial fields alongside the legacy slugs.
         payload = json.loads(alert.payload_json)
         payload["partial_pickup_slug"] = session.partial_pickup_slug
         payload["partial_dropoff_slug"] = session.partial_dropoff_slug
+        payload["partial_pickup_text"] = session.partial_pickup_text
+        payload["partial_pickup_lat"] = session.partial_pickup_lat
+        payload["partial_pickup_lng"] = session.partial_pickup_lng
+        payload["partial_dropoff_text"] = session.partial_dropoff_text
+        payload["partial_dropoff_lat"] = session.partial_dropoff_lat
+        payload["partial_dropoff_lng"] = session.partial_dropoff_lng
         alert.payload_json = json.dumps(payload, ensure_ascii=False)
     db.session.add(alert)
     db.session.commit()
@@ -197,7 +218,11 @@ def _open_handoff(
 
 def _load_active_ride_context(customer_id: int) -> dict | None:
     """Return a dict describing this customer's current in-flight ride so
-    the AI can answer questions about it. Returns None when they have none."""
+    the AI can answer questions about it. Returns None when they have none.
+
+    Prefers reverse-geocoded street addresses over zone names since GPS
+    bookings may leave to_zone_id NULL when the destination is captain-set.
+    """
     ride = (
         Ride.query.filter(
             Ride.customer_id == customer_id,
@@ -208,11 +233,19 @@ def _load_active_ride_context(customer_id: int) -> dict | None:
     )
     if ride is None:
         return None
+    from_label = (
+        ride.pickup_address
+        or (ride.from_zone.name_ar if ride.from_zone else None)
+    )
+    to_label = (
+        ride.dropoff_address
+        or (ride.to_zone.name_ar if ride.to_zone else None)
+    )
     return {
         "id": ride.id,
         "status": ride.status,
-        "from_zone_ar": ride.from_zone.name_ar if ride.from_zone else None,
-        "to_zone_ar": ride.to_zone.name_ar if ride.to_zone else None,
+        "from_zone_ar": from_label,
+        "to_zone_ar": to_label,
         "price_egp": float(ride.price_egp),
         "driver_name": ride.driver.name if ride.driver else None,
     }
@@ -239,42 +272,186 @@ def _log_gemini_call(
         current_app.logger.warning("gemini metric log failed: %s", e)
 
 
-def process_incoming(customer: Customer, message_body: str) -> dict:
-    """Main entry point. Returns a small dict summarising what happened.
+def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
+    """Fire ride_lifecycle.create_ride when we have enough session state.
 
-    The webhook returns 200 to Meta regardless — this runs after we've
-    persisted the raw inbox message.
+    Requires pickup coords. Dropoff coords are best-effort — missing them
+    just means the captain sets the destination + price on arrival (same
+    as legacy WhatsApp flow).
+
+    Returns a small dict on success, or None if we still need more info.
     """
-    import time
-    if not message_body or not message_body.strip():
-        return {"handled": False, "reason": "empty"}
+    if session.partial_pickup_lat is None or session.partial_pickup_lng is None:
+        return None
 
-    # Rate-limit per phone — protect Gemini quota from a single abuser.
-    allowed, count = rate_limit.check_gemini_limit(customer.wa_id)
-    if not allowed:
-        current_app.logger.warning(
-            "Gemini rate limit exceeded for %s (count=%d)", customer.wa_id, count
+    _try_send_sticker(customer.wa_id, "booked", customer=customer)
+
+    try:
+        ride, pending_ids = ride_lifecycle.create_ride(
+            customer_id=customer.id,
+            pickup_lat=session.partial_pickup_lat,
+            pickup_lng=session.partial_pickup_lng,
+            dropoff_lat=session.partial_dropoff_lat,
+            dropoff_lng=session.partial_dropoff_lng,
+            source="whatsapp",
         )
-        _log_gemini_call(customer, latency_ms=0, result=None, was_rate_limited=True)
+    except ValueError as e:
         _try_send(
             customer.wa_id,
-            "🙏 معلش يا فندم، وصلت للحد الأقصى من الرسائل في الساعة دي. "
-            "استنى شوية وحاول تاني.",
+            "معلش، حصلت مشكلة في إنشاء الرحلة. هنراجع الطلب بسرعة.",
             customer=customer,
         )
-        return {"handled": True, "action": "rate_limited"}
+        current_app.logger.warning("whatsapp create_ride failed: %s", e)
+        return {"handled": True, "action": "create_failed"}
 
-    session = _get_or_open_session(customer.id, customer.wa_id)
-    prior = {
-        "from": session.partial_pickup_slug,
-        "to": session.partial_dropoff_slug,
-    }
+    session.status = "completed"
+    db.session.commit()
+
+    # Proactive "we're searching" message — matches the plan-approved UX
+    # decision so the customer isn't left in silence for 2-3 min.
+    ack = (
+        f"🚗 تمام! بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
+        + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address
+           else ".\nالكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.")
+    )
+    _try_send(customer.wa_id, ack, customer=customer)
+
+    matching.start_matching(ride.id, pending_fee_ids=pending_ids)
+    return {"handled": True, "action": "ride_created", "ride_id": ride.id}
+
+
+def _apply_pickup_from_pin(session: AiSession, lat: float, lng: float) -> None:
+    """Location-pin messages are treated as confident pickup coords."""
+    session.partial_pickup_lat = lat
+    session.partial_pickup_lng = lng
+    session.partial_pickup_text = None  # pin trumps any earlier text guess
+
+
+def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str | None]:
+    """Try to geocode a free-text pickup. Returns (confident_hit, label).
+
+    On confident hit: saves lat/lng to session, returns (True, label).
+    On ambiguous / miss: leaves lat/lng untouched, returns (False, None).
+    """
+    session.partial_pickup_text = text
+    hit = rg.geocode_pickup(text)
+    if hit is None:
+        return False, None
+    if not hit.get("confident"):
+        return False, hit.get("label")
+    session.partial_pickup_lat = hit["lat"]
+    session.partial_pickup_lng = hit["lng"]
+    return True, hit["label"]
+
+
+def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
+    """Geocode dropoff best-effort. Any hit is fine — the captain confirms
+    with the customer at pickup, and pricing is coord-based only when we
+    have both ends. Missing dropoff coords just falls back to captain-set."""
+    session.partial_dropoff_text = text
+    results = rg.search_places(text, limit=1)
+    if results:
+        session.partial_dropoff_lat = results[0]["lat"]
+        session.partial_dropoff_lng = results[0]["lng"]
+
+
+def process_incoming(customer: Customer, payload) -> dict:
+    """Main entry point. `payload` is one of:
+      {"kind": "text", "body": "<user message>"}
+      {"kind": "location", "lat": <float>, "lng": <float>}
+
+    Kept string-tolerant for backward compat (old webhook path) — a raw
+    string is treated as a text message.
+
+    Returns a small dict summarising what happened. The webhook returns 200
+    to Meta regardless — this runs in a greenlet after inbox persistence.
+    """
+    import time
+
+    # Backward compat: earlier callers passed a raw string.
+    if isinstance(payload, str):
+        payload = {"kind": "text", "body": payload}
+    if not isinstance(payload, dict):
+        return {"handled": False, "reason": "bad_payload"}
+
+    kind = payload.get("kind")
+    if kind == "text":
+        message_body = (payload.get("body") or "").strip()
+        if not message_body:
+            return {"handled": False, "reason": "empty"}
+    elif kind == "location":
+        try:
+            pin_lat = float(payload["lat"])
+            pin_lng = float(payload["lng"])
+        except (KeyError, TypeError, ValueError):
+            return {"handled": False, "reason": "bad_location"}
+        message_body = f"📍 {pin_lat:.6f},{pin_lng:.6f}"
+    else:
+        return {"handled": False, "reason": "unknown_kind"}
+
     active_ride = _load_active_ride_context(customer.id)
 
+    # Cancel keyword — checked FIRST so a customer can bail out even if the
+    # AI is confused. Only fires when they actually have a live ride.
+    if (
+        kind == "text"
+        and active_ride is not None
+        and active_ride["status"] in ("broadcasting", "assigned")
+        and _CANCEL_KEYWORDS_RE.match(message_body)
+    ):
+        try:
+            ride = db.session.get(Ride, active_ride["id"])
+            ride_lifecycle.cancel(ride, actor="customer", reason="whatsapp_cancel")
+            _try_send(customer.wa_id, "✅ تمام، الرحلة اتلغت. سلامات!", customer=customer)
+            return {"handled": True, "action": "cancel_keyword"}
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("cancel keyword failed: %s", e)
+            # Fall through to normal handling if cancel errored.
+
+    # Rate-limit per phone — protect Gemini quota from a single abuser.
+    # Location pins skip the limit since they don't call Gemini.
+    if kind == "text":
+        allowed, count = rate_limit.check_gemini_limit(customer.wa_id)
+        if not allowed:
+            current_app.logger.warning(
+                "Gemini rate limit exceeded for %s (count=%d)", customer.wa_id, count
+            )
+            _log_gemini_call(customer, latency_ms=0, result=None, was_rate_limited=True)
+            _try_send(
+                customer.wa_id,
+                "🙏 معلش يا فندم، وصلت للحد الأقصى من الرسائل في الساعة دي. "
+                "استنى شوية وحاول تاني.",
+                customer=customer,
+            )
+            return {"handled": True, "action": "rate_limited"}
+
+    session = _get_or_open_session(customer.id, customer.wa_id)
+    session.touch(_ttl_minutes())
+
+    # LOCATION PIN — trust it. Attach as pickup and try to book right away
+    # (if we already have a dropoff from a prior turn we're good to go).
+    if kind == "location":
+        _apply_pickup_from_pin(session, pin_lat, pin_lng)
+        db.session.commit()
+        booked = _try_book_ride(customer, session)
+        if booked:
+            return booked
+        # We have pickup pin but still no destination — ask for it.
+        _try_send(
+            customer.wa_id,
+            "🌟 وصلت الـ 📍، تمام. تحب تروح فين؟",
+            customer=customer,
+        )
+        return {"handled": True, "action": "await_dropoff"}
+
+    # TEXT — hand to Gemini.
+    prior = {
+        "from": session.partial_pickup_text or session.partial_pickup_slug,
+        "to":   session.partial_dropoff_text or session.partial_dropoff_slug,
+    }
     t0 = time.time()
     result = ai_parser.parse_message(message_body, prior=prior, active_ride=active_ride)
     latency_ms = int((time.time() - t0) * 1000)
-    session.touch(_ttl_minutes())
     _log_gemini_call(customer, latency_ms=latency_ms, result=result)
 
     # True gibberish / API error → human handoff. Low-confidence chat replies
@@ -302,7 +479,7 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
             )
         return {"handled": True, "action": "ride_status"}
 
-    # Cancel the customer's active ride
+    # Explicit AI-driven cancel intent (broader than the keyword regex).
     if result.intent == "cancel_ride":
         if active_ride is None:
             _try_send(customer.wa_id, "🙂 مش لاقيلك رحلة نشطة دلوقتي.", customer=customer)
@@ -317,7 +494,7 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
                           message_body=message_body, session_id=session.id)
         return {"handled": True, "action": "cancel_ride"}
 
-    # File a complaint — creates admin alert + queues Complaint if models exist
+    # File a complaint — creates admin alert.
     if result.intent == "complaint":
         summary = result.complaint_summary or message_body
         alert = AdminAlert(
@@ -341,22 +518,31 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "complaint"}
 
-    # Conversational Q&A — Gemini answered as a friendly agent. No session
-    # state to persist and no booking to create; just relay the reply.
+    # Conversational Q&A — just relay the AI's friendly reply.
     if result.intent == "chat":
         if result.reply_ar:
             _try_send(customer.wa_id, result.reply_ar, customer=customer)
         return {"handled": True, "action": "chat"}
 
-    # Merge whatever partials Gemini extracted from this turn.
+    # Merge whatever partials Gemini extracted from this turn. Text fields
+    # are the primary source; slugs are kept for observability only.
     if result.from_zone_slug:
         session.partial_pickup_slug = result.from_zone_slug
     if result.to_zone_slug:
         session.partial_dropoff_slug = result.to_zone_slug
+    if result.dropoff_text:
+        _resolve_dropoff_from_text(session, result.dropoff_text)
 
-    # Explicit clarify path — Gemini decided we need one more question. Skip
-    # the confidence gate here: the AI is deliberately asking to disambiguate,
-    # so we always want the friendly follow-up, not a handoff.
+    pickup_confident = (
+        session.partial_pickup_lat is not None and session.partial_pickup_lng is not None
+    )
+    pickup_ambiguous_label: str | None = None
+    if not pickup_confident and result.pickup_text:
+        pickup_confident, pickup_ambiguous_label = _resolve_pickup_from_text(
+            session, result.pickup_text,
+        )
+
+    # Explicit clarify path — Gemini decided we need one more question.
     if result.intent == "clarify":
         session.clarify_count = (session.clarify_count or 0) + 1
         if session.clarify_count > 2:
@@ -372,7 +558,7 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "clarify"}
 
-    # From here on we're in the booking flow — enforce confidence threshold.
+    # Booking flow — enforce confidence threshold on the AI parse itself.
     if result.confidence < MIN_CONFIDENCE:
         _open_handoff(
             customer,
@@ -382,84 +568,38 @@ def process_incoming(customer: Customer, message_body: str) -> dict:
         )
         return {"handled": True, "action": "handoff", "confidence": result.confidence}
 
-    # Short chatbot flow: at most one follow-up. Anything after that goes
-    # to an admin so we don't loop-badger the customer.
-    pickup_slug = session.partial_pickup_slug
-    dropoff_slug = session.partial_dropoff_slug
+    # Pickup confidently geocoded → book straight away.
+    if pickup_confident:
+        booked = _try_book_ride(customer, session)
+        if booked:
+            return booked
 
-    # We only need a pickup zone to fire an order — if we have it, we book,
-    # even if the destination is missing or unknown. Captain agrees on
-    # destination + price verbally on arrival for WhatsApp rides.
-    if pickup_slug:
-        from_zone = Zone.query.filter_by(slug=pickup_slug, is_active=True).first()
-        if from_zone is None:
-            # Gemini returned a slug that no longer maps to an active zone —
-            # can't book, escalate.
-            _open_handoff(
-                customer, reason="unknown_zone",
-                message_body=message_body, session_id=session.id,
-            )
-            return {"handled": True, "action": "handoff"}
-
-        # Optional destination — if the AI matched it to a registered zone,
-        # use it for pre-priced booking. Otherwise book WhatsApp-style
-        # (deferred pricing).
-        to_zone = None
-        if dropoff_slug:
-            to_zone = Zone.query.filter_by(slug=dropoff_slug, is_active=True).first()
-
-        _try_send_sticker(customer.wa_id, "booked", customer=customer)
-
-        try:
-            ride, pending_ids = ride_lifecycle.create_ride(
-                customer_id=customer.id,
-                from_zone_id=from_zone.id,
-                to_zone_id=(to_zone.id if to_zone else None),
-                source="whatsapp",
-            )
-        except ValueError as e:
-            _try_send(
-                customer.wa_id,
-                "معلش، حصلت مشكلة صغيرة. هنراجع الطلب بسرعة.",
-                customer=customer,
-            )
-            _open_handoff(customer, reason=str(e), message_body=message_body, session_id=session.id)
-            return {"handled": True, "action": "handoff"}
-
-        session.status = "completed"
+    # We got pickup text but couldn't confidently geocode it → ask for a
+    # WhatsApp 📍 pin instead of gambling on a fuzzy match.
+    if result.pickup_text and not pickup_confident:
         db.session.commit()
+        hint = f" (اللي لقيته: {pickup_ambiguous_label})" if pickup_ambiguous_label else ""
+        _try_send(
+            customer.wa_id,
+            "معلش، مش قادر أحدد مكانك بالظبط" + hint + "."
+            "\nممكن تبعتلي 📍 من الواتس؟ دوس على 📎 → Location → Send your current location.",
+            customer=customer,
+        )
+        return {"handled": True, "action": "await_pin"}
 
-        if to_zone:
-            ack = (
-                f"🚗 تمام! بندور على كابتن قريب من {from_zone.name_ar} "
-                f"لينزلك في {to_zone.name_ar}."
-            )
-        else:
-            ack = (
-                f"🚗 تمام! بندور على كابتن قريب من {from_zone.name_ar}.\n"
-                f"الكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر."
-            )
-        _try_send(customer.wa_id, ack, customer=customer)
-
-        matching.start_matching(ride.id, pending_fee_ids=pending_ids)
-        return {"handled": True, "action": "ride_created", "ride_id": ride.id}
-
-    # No pickup yet — one polite follow-up, then escalate.
+    # No pickup at all yet — polite follow-up, cap the loops.
     session.clarify_count = (session.clarify_count or 0) + 1
     if session.clarify_count > 2:
         db.session.commit()
-        _open_handoff(
-            customer, reason="clarify_exhausted",
-            message_body=message_body, session_id=session.id,
-        )
+        _open_handoff(customer, reason="clarify_exhausted",
+                      message_body=message_body, session_id=session.id)
         return {"handled": True, "action": "handoff"}
-
     db.session.commit()
-    if dropoff_slug and Zone.query.filter_by(slug=dropoff_slug, is_active=True).first():
-        # We know where they want to go — ask only for pickup.
-        prompt = "تمام 🚗 وحضرتك دلوقتي فين؟ ابعتلي اسم الحي بس."
+    if session.partial_dropoff_text:
+        prompt = (
+            "تمام 🚗 وحضرتك دلوقتي فين؟ اكتبلي اسم مكانك أو ابعتلي 📍 من الواتس."
+        )
     else:
-        # Nothing usable — friendly open question, destination first per spec.
         prompt = result.reply_ar or "أهلاً 🌟 تحب تروح فين؟"
     _try_send(customer.wa_id, prompt, customer=customer)
     return {"handled": True, "action": "await_info"}

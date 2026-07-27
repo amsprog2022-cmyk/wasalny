@@ -64,6 +64,49 @@ def index():
     )
 
 
+@alerts_bp.route("/<int:alert_id>/reply", methods=["POST"])
+@login_required
+def reply_to_customer(alert_id: int):
+    """Send a WhatsApp text reply to the customer attached to this alert.
+
+    Used by the "no captain found" queue so an agent can reassure the
+    customer without leaving the alerts page. Persists the outbound message
+    to the conversation inbox so it's visible on the customer's timeline.
+    """
+    alert = AdminAlert.query.get_or_404(alert_id)
+    if alert.customer_id is None:
+        flash("Alert has no customer to reply to.", "error")
+        return redirect(url_for("alerts.index"))
+    customer = Customer.query.get(alert.customer_id)
+    if customer is None or not customer.wa_id:
+        flash("Customer record is missing a WhatsApp number.", "error")
+        return redirect(url_for("alerts.index"))
+
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        flash("Reply body is empty.", "error")
+        return redirect(url_for("alerts.index"))
+
+    try:
+        resp = whatsapp.send_text(customer.wa_id, body)
+    except WhatsAppError as e:
+        current_app.logger.warning("admin reply send failed: %s", e)
+        flash(f"WhatsApp send failed: {e}", "error")
+        return redirect(url_for("alerts.index"))
+
+    wa_msg_id = None
+    if isinstance(resp, dict):
+        wa_msg_id = (resp.get("messages") or [{}])[0].get("id")
+
+    # Log to the customer conversation so admins see the reply in the inbox.
+    from app.services import whatsapp_booking
+    whatsapp_booking._persist_outbound(
+        customer, body, msg_type="text", wa_message_id=wa_msg_id,
+    )
+    flash("Reply sent.", "success")
+    return redirect(url_for("alerts.index"))
+
+
 @alerts_bp.route("/<int:alert_id>/take-over", methods=["POST"])
 @login_required
 def take_over(alert_id: int):

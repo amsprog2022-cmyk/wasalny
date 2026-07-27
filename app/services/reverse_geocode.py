@@ -221,19 +221,37 @@ NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 SEARCH_VIEWBOX = "30.90,30.60,31.60,29.90"
 
 
-def search_places(query: str, limit: int = 6) -> list[dict]:
-    """Forward-geocode free text into candidate destinations.
+# Landmark-ish Nominatim classes we treat as a confident pickup hit.
+# Wide categories like `place` (city/town/suburb) are excluded because
+# they resolve to a huge bounding box — matcher would pick a captain
+# 2km off from where the customer actually is.
+_CONFIDENT_PICKUP_CLASSES = {
+    "amenity",
+    "tourism",
+    "railway",
+    "aeroway",
+    "historic",
+    "office",
+    "shop",
+    "building",
+    "leisure",
+    "healthcare",
+}
 
-    Returns [{"label": str, "lat": float, "lng": float}, ...] biased to
-    Qalyubia + Greater Cairo, Arabic labels. Cached 24h per normalized
-    query so repeated typing sessions don't burn the Nominatim free tier.
-    """
+# ~500m in decimal degrees at Egypt's latitude — anything tighter than
+# this is a small enough bbox that we trust the coord for pickup matching.
+_CONFIDENT_BBOX_WIDTH_DEG = 0.005
+
+
+def _nominatim_search_raw(query: str, limit: int = 6) -> list[dict]:
+    """Fetch raw Nominatim /search results (including class + bbox) for a
+    query, biased to Qalyubia + Greater Cairo, cached 24h."""
     q = (query or "").strip()
     if len(q) < 3:
         return []
 
     r = get_redis(current_app.config.get("REDIS_URL"))
-    cache_key = f"geo:search:{_normalize(q)}"
+    cache_key = f"geo:search_raw:{_normalize(q)}"
     cached = r.get(cache_key)
     if cached is not None:
         raw = cached if isinstance(cached, str) else cached.decode("utf-8", "ignore")
@@ -270,8 +288,24 @@ def search_places(query: str, limit: int = 6) -> list[dict]:
                 label = "، ".join(
                     [p.strip() for p in display.split(",")[:3] if p.strip()]
                 )
-                if label:
-                    results.append({"label": label, "lat": lat, "lng": lng})
+                if not label:
+                    continue
+                # bbox = [south_lat, north_lat, west_lng, east_lng] as strings
+                bbox = item.get("boundingbox") or []
+                bbox_width: float | None = None
+                try:
+                    if len(bbox) == 4:
+                        bbox_width = abs(float(bbox[3]) - float(bbox[2]))
+                except (TypeError, ValueError):
+                    bbox_width = None
+                results.append({
+                    "label": label,
+                    "lat": lat,
+                    "lng": lng,
+                    "class": item.get("class"),
+                    "type": item.get("type"),
+                    "bbox_width": bbox_width,
+                })
     except (requests.RequestException, ValueError):
         return []
 
@@ -280,3 +314,48 @@ def search_places(query: str, limit: int = 6) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     return results
+
+
+def search_places(query: str, limit: int = 6) -> list[dict]:
+    """Forward-geocode free text into candidate destinations.
+
+    Returns [{"label": str, "lat": float, "lng": float}, ...] biased to
+    Qalyubia + Greater Cairo, Arabic labels. Backed by the same 24h cache
+    used for pickup-confidence scoring.
+    """
+    return [
+        {"label": r["label"], "lat": r["lat"], "lng": r["lng"]}
+        for r in _nominatim_search_raw(query, limit=limit)
+    ]
+
+
+def geocode_pickup(text: str) -> Optional[dict]:
+    """Forward-geocode a free-text pickup for the WhatsApp AI booking flow.
+
+    Returns {"lat", "lng", "label", "confident": bool} or None if Nominatim
+    yielded nothing. A hit is `confident` when we're OK feeding it into the
+    GPS matcher without asking the customer to send a WhatsApp 📍 pin:
+
+    - only one candidate returned (no ambiguity), OR
+    - top result's OSM class is a landmark-ish category (hospital, station,
+      university, etc.), OR
+    - the bounding box is tight (<~500m across).
+
+    Callers should fall back to asking for a location pin when confident=False.
+    """
+    results = _nominatim_search_raw(text, limit=3)
+    if not results:
+        return None
+    top = results[0]
+    is_landmark = (top.get("class") in _CONFIDENT_PICKUP_CLASSES)
+    tight_bbox = (
+        top.get("bbox_width") is not None
+        and top["bbox_width"] < _CONFIDENT_BBOX_WIDTH_DEG
+    )
+    confident = (len(results) == 1) or is_landmark or tight_bbox
+    return {
+        "lat": top["lat"],
+        "lng": top["lng"],
+        "label": top["label"],
+        "confident": confident,
+    }
