@@ -202,6 +202,31 @@
     removeMarker(data.driver_id);
   });
 
+  // Toggle events (Go Online / Go Offline / Available / Busy) come in
+  // separately from the position stream so a stationary captain who
+  // flips availability still updates the marker colour + sidebar row
+  // in real time without a page refresh.
+  socket.on('driver_presence_update', (data) => {
+    // If lat/lng missing (e.g. Go Offline cleared the GEO index), keep
+    // any existing marker position — the position_removed event will
+    // handle the actual removal.
+    const existing = captains.get(data.driver_id);
+    if (existing && (data.lat == null || data.lng == null)) {
+      data.lat = existing.lat;
+      data.lng = existing.lng;
+    }
+    if (data.lat != null && data.lng != null) {
+      upsertMarker(data);
+    } else {
+      // Nothing to draw and no prior state — just merge into captain map
+      // so the sidebar counts stay accurate.
+      const merged = Object.assign({}, existing || {}, data);
+      captains.set(data.driver_id, merged);
+      renderCaptainList();
+    }
+    updateCounts();
+  });
+
   socket.on('ride_lifecycle_update', (payload) => {
     const ride = payload.ride;
     if (!ride) return;

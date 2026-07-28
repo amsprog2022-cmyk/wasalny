@@ -85,6 +85,7 @@ class DriverNamespace(Namespace):
             return
         av.set_online(driver_id, zone_id)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
+        _broadcast_presence_to_admin(driver_id)
 
     def on_driver_offline(self, data):
         driver_id = _driver_id_from_token()
@@ -188,6 +189,7 @@ class DriverNamespace(Namespace):
         available = bool((data or {}).get("available"))
         av.set_available(driver_id, available)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
+        _broadcast_presence_to_admin(driver_id)
 
     def on_driver_zone(self, data):
         driver_id = _driver_id_from_token()
@@ -198,6 +200,34 @@ class DriverNamespace(Namespace):
             return
         av.change_zone(driver_id, zone_id)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
+        _broadcast_presence_to_admin(driver_id)
+
+
+def _broadcast_presence_to_admin(driver_id: int) -> None:
+    """Push a `driver_presence_update` to /inbox so the admin live map's
+    captain markers + sidebar can flip colours (available / busy /
+    offline) without a page refresh. Best-effort — swallows any db /
+    Redis error since a broken presence emit shouldn't affect the
+    captain's own flow."""
+    try:
+        driver = db.session.get(Driver, driver_id)
+        pos = av.get_position(driver_id)
+        presence = av.get_presence(driver_id)
+        socketio.emit(
+            "driver_presence_update",
+            {
+                "driver_id": driver_id,
+                "name": (driver.name if driver else None),
+                "wa_id": (driver.wa_id if driver else None),
+                "online": presence.online,
+                "available": presence.available,
+                "lat": pos[0] if pos else None,
+                "lng": pos[1] if pos else None,
+            },
+            namespace="/inbox",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("driver_presence_update emit failed: %s", e)
 
 
 socketio.on_namespace(DriverNamespace(NAMESPACE))
