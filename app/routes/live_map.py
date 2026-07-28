@@ -205,6 +205,29 @@ def push_diag():
         ),
     }
 
+    def _fire_test(token: str) -> dict:
+        """Call firebase-admin messaging directly so we can surface the
+        exception message instead of the plain False that send_to_driver
+        returns on failure."""
+        try:
+            message = m.Message(
+                token=token,
+                notification=m.Notification(
+                    title="اختبار الإشعارات",
+                    body="لو وصلك الإشعار ده يبقى كل حاجة تمام ✅",
+                ),
+                data={"kind": "test"},
+            )
+            msg_id = m.send(message)
+            return {"ok": True, "message_id": msg_id}
+        except Exception as e:  # noqa: BLE001
+            return {
+                "ok": False,
+                "error_type": type(e).__name__,
+                "error": str(e)[:400],
+                "token_head": (token[:20] + "…") if token else None,
+            }
+
     if driver_id:
         d = db.session.get(Driver, driver_id)
         if d is None:
@@ -214,14 +237,12 @@ def push_diag():
                 "error": "driver_has_no_fcm_token",
                 "hint": "Captain must open the app + accept notification permission",
             }
+        elif m is None:
+            result["test_send"] = {"error": "firebase_admin_not_ready"}
         else:
-            ok = push.send_to_driver(
-                driver_id,
-                title="اختبار الإشعارات",
-                body="لو وصلك الإشعار ده يبقى كل حاجة تمام ✅",
-                data={"kind": "test"},
-            )
-            result["test_send"] = {"driver_id": driver_id, "ok": ok}
+            r = _fire_test(d.fcm_token)
+            r["driver_id"] = driver_id
+            result["test_send"] = r
 
     if customer_id:
         c = db.session.get(Customer, customer_id)
@@ -232,14 +253,12 @@ def push_diag():
                 "error": "customer_has_no_fcm_token",
                 "hint": "Customer must open the app + accept notification permission",
             }
+        elif m is None:
+            result["test_send"] = {"error": "firebase_admin_not_ready"}
         else:
-            ok = push.send_to_customer(
-                customer_id,
-                title="اختبار الإشعارات",
-                body="لو وصلك الإشعار ده يبقى كل حاجة تمام ✅",
-                data={"kind": "test"},
-            )
-            result["test_send"] = {"customer_id": customer_id, "ok": ok}
+            r = _fire_test(c.fcm_token)
+            r["customer_id"] = customer_id
+            result["test_send"] = r
 
     return jsonify(result)
 
