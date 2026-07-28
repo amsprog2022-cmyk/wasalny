@@ -11,6 +11,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, jsonify, render_template, request
 from flask_login import login_required
 
+from app import db
 from app.models.driver import Driver
 from app.models.ride import Ride
 from app.services import availability as av
@@ -162,6 +163,87 @@ def pending_alerts():
     return jsonify(out)
 
 
+@live_map_bp.route("/push-diag")
+@login_required
+def push_diag():
+    """Report the FCM stack health so we can see WHY notifications
+    aren't landing without digging into Railway logs.
+
+    Query: ?driver_id=1 or ?customer_id=2 → also fire a test push and
+    return the send() result (True/False). Without those params, just
+    reports the initialization status + token counts.
+    """
+    from app.services import push_notifications as push
+    from app.models.customer import Customer
+    m = push._messaging()
+
+    driver_id = request.args.get("driver_id", type=int)
+    customer_id = request.args.get("customer_id", type=int)
+
+    driver_with_token_count = (
+        Driver.query
+        .filter(Driver.is_active.is_(True))
+        .filter(Driver.deleted_at.is_(None))
+        .filter(Driver.fcm_token.isnot(None))
+        .count()
+    )
+    customer_with_token_count = (
+        Customer.query
+        .filter(Customer.deleted_at.is_(None))
+        .filter(Customer.fcm_token.isnot(None))
+        .count()
+    )
+
+    result = {
+        "firebase_admin_ready": m is not None,
+        "drivers_with_fcm_token": driver_with_token_count,
+        "customers_with_fcm_token": customer_with_token_count,
+        "hint": (
+            "Pass ?driver_id=<id> or ?customer_id=<id> to send a test push. "
+            "firebase_admin_ready must be true; if false, "
+            "FIREBASE_SERVICE_ACCOUNT_JSON env var is missing on Railway."
+        ),
+    }
+
+    if driver_id:
+        d = db.session.get(Driver, driver_id)
+        if d is None:
+            result["test_send"] = {"error": "driver_not_found"}
+        elif not d.fcm_token:
+            result["test_send"] = {
+                "error": "driver_has_no_fcm_token",
+                "hint": "Captain must open the app + accept notification permission",
+            }
+        else:
+            ok = push.send_to_driver(
+                driver_id,
+                title="اختبار الإشعارات",
+                body="لو وصلك الإشعار ده يبقى كل حاجة تمام ✅",
+                data={"kind": "test"},
+            )
+            result["test_send"] = {"driver_id": driver_id, "ok": ok}
+
+    if customer_id:
+        c = db.session.get(Customer, customer_id)
+        if c is None:
+            result["test_send"] = {"error": "customer_not_found"}
+        elif not c.fcm_token:
+            result["test_send"] = {
+                "error": "customer_has_no_fcm_token",
+                "hint": "Customer must open the app + accept notification permission",
+            }
+        else:
+            ok = push.send_to_customer(
+                customer_id,
+                title="اختبار الإشعارات",
+                body="لو وصلك الإشعار ده يبقى كل حاجة تمام ✅",
+                data={"kind": "test"},
+            )
+            result["test_send"] = {"customer_id": customer_id, "ok": ok}
+
+    return jsonify(result)
+
+
 @live_map_bp.route("/debug", strict_slashes=False)
 @live_map_bp.route("/debug/", strict_slashes=False)
 @login_required
@@ -221,6 +303,11 @@ def debug_state():
             "seconds_since_hb":
                 (round(now - presence.last_hb, 1) if presence.last_hb else None),
             "is_live": presence.is_live,
+            # Push-notification diagnostics — most notification issues come
+            # down to a missing/stale FCM token or an uninitialized service
+            # account. Showing this here saves a round-trip to Railway logs.
+            "has_fcm_token": bool(getattr(d, "fcm_token", None)),
+            "fcm_platform": getattr(d, "fcm_platform", None),
         })
     return jsonify({
         "total_active_drivers": len(drivers),
