@@ -45,7 +45,11 @@ class Quote:
 
 
 def _commission_rate() -> Decimal:
-    return Decimal(str(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+    # Admin-editable via /pricing → Setting rows. Falls back to
+    # WASSALNY_COMMISSION_RATE from Flask config when the DB row is absent
+    # (first boot before admin touches anything).
+    from app.services import settings as settings_svc
+    return settings_svc.get_pricing()["commission_rate"]
 
 
 def get_pending_fees(customer_id: int) -> tuple[Decimal, list[int]]:
@@ -110,14 +114,20 @@ def quote_by_coords(
     from app.services.geo import haversine_km
 
     distance_km = haversine_km(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng)
-    base   = Decimal(str(current_app.config.get("PRICING_BASE_EGP",   "10")))
-    per_km = Decimal(str(current_app.config.get("PRICING_PER_KM_EGP", "3")))
-    min_p  = Decimal(str(current_app.config.get("PRICING_MIN_EGP",    "15")))
-    max_p  = Decimal(str(current_app.config.get("PRICING_MAX_EGP",    "500")))
+    # Admin can tune all four knobs live from /pricing → Setting rows.
+    from app.services import settings as settings_svc
+    conf = settings_svc.get_pricing()
+    base   = conf["base_egp"]
+    per_km = conf["per_km_egp"]
+    min_p  = conf["min_egp"]
+    max_p  = conf["max_egp"]
 
     raw = base + per_km * Decimal(str(distance_km))
     ride_price = min(max_p, max(min_p, raw)).quantize(Decimal("0.01"))
-    commission = (ride_price * _commission_rate()).quantize(Decimal("0.01"))
+    # Reuse the same conf dict so commission is calculated against the
+    # same snapshot the caller sees — avoids a subtle mid-quote change if
+    # an admin edits while a quote is in-flight.
+    commission = (ride_price * conf["commission_rate"]).quantize(Decimal("0.01"))
     pending, pending_ids = get_pending_fees(customer_id)
     total = (ride_price + pending).quantize(Decimal("0.01"))
 

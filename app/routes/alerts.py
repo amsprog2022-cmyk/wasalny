@@ -270,7 +270,8 @@ def assign(alert_id: int):
         try:
             new_price = float(price_raw)
             ride.price_egp = Decimal(f"{new_price:.2f}")
-            rate = Decimal(str(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+            from app.services import settings as _settings_svc
+            rate = _settings_svc.get_pricing()["commission_rate"]
             ride.commission_egp = (Decimal(f"{new_price:.2f}") * rate).quantize(Decimal("0.01"))
             db.session.commit()
         except (TypeError, ValueError):

@@ -14,6 +14,7 @@ from app.models.ops import (
     AdminBroadcast, Announcement, AuditLog,
 )
 from app.models.captain_rating import CaptainRatingOfCustomer
+from app.models.setting import Setting
 
 __all__ = [
     "User",
@@ -41,4 +42,5 @@ __all__ = [
     "Announcement",
     "AuditLog",
     "CaptainRatingOfCustomer",
+    "Setting",
 ]

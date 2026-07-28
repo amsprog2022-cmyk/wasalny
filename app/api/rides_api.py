@@ -35,6 +35,7 @@ from app.models.zone import Zone
 from app.services import pricing as pricing_svc
 from app.services import ride_lifecycle
 from app.services import matching
+from app.services import settings as _settings_svc
 
 
 rides_api_bp = Blueprint("rides_api", __name__, url_prefix="/api/v1")
@@ -240,7 +241,9 @@ def driver_earnings():
             "today": today_bucket,
             "this_week": _bucket(week_start),
             "this_month": _bucket(month_start),
-            "commission_rate": float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")),
+            # Read from Setting so captain's "X% من كل رحلة" matches what
+            # actually gets deducted (admin can tune it live via /pricing).
+            "commission_rate": float(_settings_svc.get_pricing()["commission_rate"]),
             "today_trips": today_trips,
             "cash_owed_egp": today_bucket["commission_egp"],
         }
@@ -974,8 +977,8 @@ def rides_update_price(ride_id: int):
     old_price = float(ride.price_egp)
     ride.price_egp = Decimal(f"{new_price:.2f}")
 
-    # Recompute commission from the platform rate now that we have a real price.
-    rate = Decimal(str(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
+    # Recompute commission from the admin-editable rate now that we have a real price.
+    rate = _settings_svc.get_pricing()["commission_rate"]
     ride.commission_egp = (Decimal(f"{new_price:.2f}") * rate).quantize(Decimal("0.01"))
     db.session.commit()
 

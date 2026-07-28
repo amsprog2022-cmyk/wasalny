@@ -2,13 +2,103 @@
 {% block title %}الأسعار · وصلني بنها{% endblock %}
 {% block content %}
 <div class="p-6 max-w-6xl mx-auto">
+  {# ---------- GPS pricing (Phase 2+ real-time booking) ---------- #}
+  <section class="card p-6 mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h2 class="text-xl font-bold">تسعيرة الرحلات بالكيلومتر</h2>
+        <p class="text-text-muted text-sm">
+          كل رحلة اتحسبت من التطبيق أو الواتساب بتستخدم المعادلة دي:
+          <code class="text-primary" dir="ltr">max(min, min(max, base + per_km × km))</code>
+        </p>
+      </div>
+    </div>
+
+    <form method="post" action="{{ url_for('pricing.save_gps_pricing') }}"
+          class="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <label class="block">
+        <span class="text-xs text-text-muted">سعر البداية (base)</span>
+        <div class="flex items-center gap-1 mt-1">
+          <input type="number" step="0.5" min="0" name="pricing_base_egp"
+                 value="{{ '%.2f'|format(gps_pricing.base_egp) }}"
+                 class="w-full bg-surface-raised p-2 rounded"
+                 {% if not current_user.is_admin %}readonly{% endif %} />
+          <span class="text-xs text-text-muted">ج.م</span>
+        </div>
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-text-muted">سعر الكيلو (per km)</span>
+        <div class="flex items-center gap-1 mt-1">
+          <input type="number" step="0.25" min="0" name="pricing_per_km_egp"
+                 value="{{ '%.2f'|format(gps_pricing.per_km_egp) }}"
+                 class="w-full bg-surface-raised p-2 rounded"
+                 {% if not current_user.is_admin %}readonly{% endif %} />
+          <span class="text-xs text-text-muted">ج.م/كم</span>
+        </div>
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-text-muted">الحد الأدنى (min)</span>
+        <div class="flex items-center gap-1 mt-1">
+          <input type="number" step="1" min="0" name="pricing_min_egp"
+                 value="{{ '%.2f'|format(gps_pricing.min_egp) }}"
+                 class="w-full bg-surface-raised p-2 rounded"
+                 {% if not current_user.is_admin %}readonly{% endif %} />
+          <span class="text-xs text-text-muted">ج.م</span>
+        </div>
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-text-muted">الحد الأقصى (max)</span>
+        <div class="flex items-center gap-1 mt-1">
+          <input type="number" step="10" min="0" name="pricing_max_egp"
+                 value="{{ '%.2f'|format(gps_pricing.max_egp) }}"
+                 class="w-full bg-surface-raised p-2 rounded"
+                 {% if not current_user.is_admin %}readonly{% endif %} />
+          <span class="text-xs text-text-muted">ج.م</span>
+        </div>
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-text-muted">عمولة المنصة</span>
+        <div class="flex items-center gap-1 mt-1">
+          <input type="number" step="0.01" min="0" max="1"
+                 name="commission_rate"
+                 value="{{ '%.4f'|format(gps_pricing.commission_rate) }}"
+                 class="w-full bg-surface-raised p-2 rounded"
+                 {% if not current_user.is_admin %}readonly{% endif %} />
+          <span class="text-xs text-text-muted">من كل رحلة</span>
+        </div>
+      </label>
+
+      {% if current_user.is_admin %}
+        <div class="col-span-2 md:col-span-5 flex items-center justify-between mt-2">
+          <div class="text-xs text-text-muted">
+            مثال: رحلة ٥ كم بالقيم الحالية =
+            <span class="text-primary font-bold">
+              {% set example = gps_pricing.base_egp + gps_pricing.per_km_egp * 5 %}
+              {% set clamped = [[example, gps_pricing.max_egp]|min, gps_pricing.min_egp]|max %}
+              {{ '%.0f'|format(clamped) }} ج.م
+            </span>
+            (بعد ما نضمن ما يقلش عن {{ '%.0f'|format(gps_pricing.min_egp) }} ولا يزيد عن {{ '%.0f'|format(gps_pricing.max_egp) }}).
+          </div>
+          <button class="btn-primary">احفظ تسعيرة الكيلو</button>
+        </div>
+      {% endif %}
+    </form>
+  </section>
+
   <div class="flex items-center justify-between mb-6">
     <div>
-      <h1 class="text-2xl font-bold">جدول الأسعار</h1>
-      <p class="text-text-muted text-sm">السعر ثابت من منطقة لمنطقة. الصفوف = من فين، الأعمدة = لفين.</p>
+      <h1 class="text-2xl font-bold">جدول الأسعار (بين المناطق)</h1>
+      <p class="text-text-muted text-sm">
+        بيستخدم بس للحجوزات اللي فيها منطقتين معروفتين (النظام القديم). حجوزات GPS
+        بتستخدم تسعيرة الكيلو أعلاه.
+      </p>
     </div>
     {% if current_user.is_admin %}
-      <button form="pricing-form" type="submit" class="btn-primary">احفظ التغييرات</button>
+      <button form="pricing-form" type="submit" class="btn-primary">احفظ جدول المناطق</button>
     {% endif %}
   </div>
 
