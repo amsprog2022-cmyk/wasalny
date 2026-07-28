@@ -315,7 +315,13 @@
         btn.disabled = false; btn.textContent = 'أرسل الرحلة';
         return;
       }
+      const data = await resp.json().catch(() => ({}));
       closeAssignModal();
+      // Give the admin visible confirmation about the customer WhatsApp
+      // — silent success used to make it look like nothing happened.
+      if (data.customer_notified === false) {
+        alert('اتسند الكابتن للرحلة، بس مقدرناش نبعت رسالة واتساب للعميل. اتواصل معاه يدوياً.');
+      }
       window.location.reload();
     } catch (e) {
       alert('حصل خطأ: ' + e);

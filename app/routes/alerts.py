@@ -289,18 +289,53 @@ def assign(alert_id: int):
     alert.resolved_at = datetime.utcnow()
     db.session.commit()
 
-    # Confirm to the customer on WhatsApp with captain info.
+    # Confirm to the customer on WhatsApp with the captain's full info +
+    # persist the outbound message to the conversation inbox so admins
+    # see it in the timeline (previously it went to the customer's phone
+    # but never landed in our own record — impossible to audit).
     customer = Customer.query.get(alert.customer_id)
-    if customer is not None:
-        plate = f" · {driver.car_plate}" if getattr(driver, "car_plate", None) else ""
-        body = (
-            f"🚗 كابتن جاي: {driver.name}{plate}\n"
-            f"رقم الكابتن: {driver.wa_id}\n"
-            f"لو محتاج تكلمه اضغط على الرقم."
+    customer_notified = False
+    if customer is not None and customer.wa_id:
+        car_bits = []
+        if getattr(driver, "car_model", None):
+            car_bits.append(driver.car_model)
+        if getattr(driver, "car_color", None):
+            car_bits.append(driver.car_color)
+        car_line = " · ".join(car_bits)
+        plate = getattr(driver, "car_plate", None)
+        wa_display = (
+            driver.wa_id
+            if driver.wa_id and driver.wa_id.startswith("+")
+            else f"+{driver.wa_id}" if driver.wa_id else ""
         )
+        body_lines = [
+            f"🚗 لقينالك كابتن! ده {driver.name} جاي دلوقتي.",
+        ]
+        if car_line:
+            body_lines.append(f"العربية: {car_line}")
+        if plate:
+            body_lines.append(f"اللوحة: {plate}")
+        if wa_display:
+            body_lines.append(f"📞 رقمه: {wa_display}")
+            body_lines.append("لو محتاج تكلمه اضغط على الرقم.")
+        body = "\n".join(body_lines)
         try:
-            whatsapp.send_text(customer.wa_id, body)
+            resp = whatsapp.send_text(customer.wa_id, body)
+            customer_notified = True
+            wa_msg_id = None
+            if isinstance(resp, dict):
+                wa_msg_id = (resp.get("messages") or [{}])[0].get("id")
+            # Persist so it shows up on the admin conversation timeline.
+            from app.services import whatsapp_booking
+            whatsapp_booking._persist_outbound(
+                customer, body, msg_type="text", wa_message_id=wa_msg_id,
+            )
         except WhatsAppError as e:
             current_app.logger.warning("assign confirm to customer failed: %s", e)
 
-    return jsonify({"ride_id": ride.id, "driver_id": driver.id, "status": ride.status})
+    return jsonify({
+        "ride_id": ride.id,
+        "driver_id": driver.id,
+        "status": ride.status,
+        "customer_notified": customer_notified,
+    })
