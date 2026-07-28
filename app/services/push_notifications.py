@@ -80,6 +80,11 @@ def _send(token: Optional[str], title: str, body: str, data: dict | None = None,
 
     # FCM data payload values must all be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
+    # Route trip offers into the captain app's high-priority ride_offer
+    # channel so the notification triggers the full-screen incoming-ride
+    # alarm. All other pushes stay on the default channel.
+    is_ride_offer = string_data.get("kind") == "trip_offered"
+    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
 
     try:
         message = m.Message(
@@ -91,7 +96,7 @@ def _send(token: Optional[str], title: str, body: str, data: dict | None = None,
                 collapse_key=collapse_key,
                 notification=m.AndroidNotification(
                     sound="default",
-                    channel_id="wassalny_default",
+                    channel_id=channel_id,
                 ),
             ),
             apns=m.APNSConfig(
@@ -101,6 +106,10 @@ def _send(token: Optional[str], title: str, body: str, data: dict | None = None,
                         sound="default",
                         content_available=True,
                         mutable_content=True,
+                        # Time-sensitive interruption for ride offers so
+                        # they punch through Focus modes on iOS.
+                        interruption_level=("time-sensitive"
+                                            if is_ride_offer else None),
                     ),
                 ),
             ),
@@ -143,6 +152,8 @@ def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
         return 0
 
     string_data = {k: str(v) for k, v in (data or {}).items()}
+    is_ride_offer = string_data.get("kind") == "trip_offered"
+    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
 
     try:
         # Prefer batch send when we have multiple recipients (single HTTP call)
@@ -155,7 +166,7 @@ def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
                 collapse_key=collapse_key,
                 notification=m.AndroidNotification(
                     sound="default",
-                    channel_id="wassalny_default",
+                    channel_id=channel_id,
                 ),
             ),
             apns=m.APNSConfig(
@@ -165,6 +176,8 @@ def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
                         sound="default",
                         content_available=True,
                         mutable_content=True,
+                        interruption_level=("time-sensitive"
+                                            if is_ride_offer else None),
                     ),
                 ),
             ),

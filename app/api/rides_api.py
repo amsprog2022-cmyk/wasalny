@@ -205,12 +205,44 @@ def driver_earnings():
             "net_egp": round(gross - commission, 2),
         }
 
+    # Per-trip breakdown for today so captains can eyeball each ride's
+    # gross / commission / net. Cash reconciliation: since every ride is
+    # cash today (no payment provider yet), `cash_owed_egp` == today's
+    # summed commissions — that's what the captain owes admin at
+    # end-of-shift.
+    today_trips_rows = (
+        Ride.query.filter(
+            Ride.driver_id == did,
+            Ride.status == "completed",
+            Ride.completed_at >= day_start,
+        )
+        .order_by(Ride.completed_at.desc())
+        .limit(50)
+        .all()
+    )
+    today_trips = [
+        {
+            "ride_id": r.id,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            "pickup_address": r.pickup_address,
+            "dropoff_address": r.dropoff_address,
+            "gross_egp": float(r.price_egp or 0),
+            "commission_egp": float(r.commission_egp or 0),
+            "net_egp": round(float(r.price_egp or 0) - float(r.commission_egp or 0), 2),
+            "was_cash": True,  # every ride is cash for now
+        }
+        for r in today_trips_rows
+    ]
+
+    today_bucket = _bucket(day_start)
     return jsonify(
         {
-            "today": _bucket(day_start),
+            "today": today_bucket,
             "this_week": _bucket(week_start),
             "this_month": _bucket(month_start),
             "commission_rate": float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")),
+            "today_trips": today_trips,
+            "cash_owed_egp": today_bucket["commission_egp"],
         }
     )
 
@@ -1117,6 +1149,46 @@ def rides_sos(ride_id: int):
     socketio.emit(
         "sos_alert_new",
         {"id": alert.id, "ride_id": ride.id},
+        namespace="/inbox",
+    )
+    return jsonify({"id": alert.id, "status": "open"}), 201
+
+
+@rides_api_bp.post("/driver/sos")
+@jwt_required()
+def driver_sos():
+    """Captain triggers SOS from their trip screen.
+
+    Requires an active ride (assigned/started) — SosAlert.ride_id is
+    non-nullable and we always want the alert linked to the trip context
+    so admins can see the customer + coords. If a captain needs help
+    outside an active trip they must call admin directly.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    active = (
+        Ride.query
+        .filter(Ride.driver_id == did, Ride.status.in_(("assigned", "started")))
+        .order_by(Ride.created_at.desc())
+        .first()
+    )
+    if active is None:
+        return jsonify({"error": "no_active_ride"}), 400
+    from app.models.ops import SosAlert
+    from app import socketio
+    data = request.json or {}
+    alert = SosAlert(
+        ride_id=active.id,
+        customer_id=active.customer_id,
+        driver_id=did,
+        message=("[من الكابتن] " + (data.get("message") or ""))[:1000],
+    )
+    db.session.add(alert)
+    db.session.commit()
+    socketio.emit(
+        "sos_alert_new",
+        {"id": alert.id, "ride_id": active.id, "source": "driver"},
         namespace="/inbox",
     )
     return jsonify({"id": alert.id, "status": "open"}), 201
