@@ -8,7 +8,7 @@ Auth: standard Flask-Login session — same as every other admin page.
 """
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, render_template
+from flask import Blueprint, current_app, jsonify, render_template, request
 from flask_login import login_required
 
 from app.models.driver import Driver
@@ -126,10 +126,32 @@ def debug_state():
         .all()
     )
     now = _time.time()
+    # By default filter to "interesting" drivers only — anyone whose Redis
+    # state suggests they might have been online recently. Pass ?all=1 to
+    # see the full list (noisy when the fleet is big).
+    show_all = request.args.get("all") == "1"
+    q_wa = (request.args.get("wa_id") or "").strip()
+
     out = []
+    total_pos = 0
+    total_online = 0
     for d in drivers:
         pos = av.get_position(d.id)
         presence = av.get_presence(d.id)
+        if pos is not None:
+            total_pos += 1
+        if presence.online:
+            total_online += 1
+        interesting = (
+            pos is not None
+            or presence.online
+            or presence.available
+            or presence.last_hb is not None
+        )
+        if not show_all and not interesting and not q_wa:
+            continue
+        if q_wa and q_wa not in (d.wa_id or ""):
+            continue
         out.append({
             "driver_id": d.id,
             "name": d.name,
@@ -148,5 +170,9 @@ def debug_state():
         })
     return jsonify({
         "total_active_drivers": len(drivers),
+        "drivers_with_position": total_pos,
+        "drivers_online": total_online,
+        "shown": len(out),
+        "hint": "pass ?all=1 to dump every driver, or ?wa_id=201... to filter by phone",
         "drivers": out,
     })
