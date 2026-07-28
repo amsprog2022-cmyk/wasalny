@@ -108,6 +108,60 @@ def data():
     return jsonify({"captains": captains_out, "rides": rides_out})
 
 
+@live_map_bp.route("/search-places")
+@login_required
+def search_places():
+    """Admin-session proxy over the existing Nominatim forward geocoder
+    (services/reverse_geocode.search_places). Powers the place-search box
+    on the live map — same as customer app's destination search but
+    without a customer JWT."""
+    from app.services import reverse_geocode as rg
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 3:
+        return jsonify([])
+    return jsonify(rg.search_places(q, limit=6))
+
+
+@live_map_bp.route("/pending-alerts")
+@login_required
+def pending_alerts():
+    """Return every open `no_driver` AdminAlert with its ride details, so
+    the live map can offer a "pick which pending ride to assign" modal
+    when the admin clicks a captain marker."""
+    from app.models.ai_session import AdminAlert
+    from app.models.customer import Customer
+    alerts = (
+        AdminAlert.query
+        .filter_by(status="open", kind="no_driver")
+        .order_by(AdminAlert.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    ride_ids = {a.ride_id for a in alerts if a.ride_id}
+    rides = {r.id: r for r in Ride.query.filter(Ride.id.in_(ride_ids)).all()} if ride_ids else {}
+    cust_ids = {a.customer_id for a in alerts if a.customer_id}
+    customers = {c.id: c for c in Customer.query.filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
+    out = []
+    for a in alerts:
+        r = rides.get(a.ride_id)
+        c = customers.get(a.customer_id)
+        out.append({
+            "alert_id": a.id,
+            "ride_id": a.ride_id,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "customer_name": (c.name or c.wa_id) if c else None,
+            "customer_wa_id": c.wa_id if c else None,
+            "from_zone_id": r.from_zone_id if r else None,
+            "from_zone_ar": (r.from_zone.name_ar if r and r.from_zone else None),
+            "to_zone_id": r.to_zone_id if r else None,
+            "to_zone_ar": (r.to_zone.name_ar if r and r.to_zone else None),
+            "pickup_address": r.pickup_address if r else None,
+            "dropoff_address": r.dropoff_address if r else None,
+            "price_egp": float(r.price_egp) if r and r.price_egp else 0.0,
+        })
+    return jsonify(out)
+
+
 @live_map_bp.route("/debug", strict_slashes=False)
 @live_map_bp.route("/debug/", strict_slashes=False)
 @login_required
