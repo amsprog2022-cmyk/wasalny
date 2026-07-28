@@ -57,9 +57,13 @@
   }
 
   function _stateClass(cap) {
-    return cap.on_trip_ride_id
-      ? 'busy'
-      : cap.available ? 'available' : 'unavailable';
+    // Priority: on-trip > offline-but-known-position > online-but-unavailable > available.
+    // "offline-known" means Redis has a GEO coord for them but presence.online is
+    // false — usually a captain that opened the app + granted GPS but hasn't
+    // tapped "Go Online" yet. Rendering them in red makes the mismatch obvious.
+    if (cap.on_trip_ride_id) return 'busy';
+    if (cap.online === false) return 'offline';
+    return cap.available ? 'available' : 'unavailable';
   }
 
   function upsertMarker(cap) {

@@ -83,9 +83,10 @@
     border: 2px solid #fff;
     box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
   }
-  .captain-dot.available   { background: #22c55e; }  /* green: idle & ready */
+  .captain-dot.available   { background: #22c55e; }  /* green: online + ready for rides */
   .captain-dot.busy        { background: #F57C00; }  /* orange: on a trip */
-  .captain-dot.unavailable { background: #6b7280; }  /* grey: online but not accepting */
+  .captain-dot.unavailable { background: #6b7280; }  /* grey: online but toggled 'busy' */
+  .captain-dot.offline     { background: #ef4444; }  /* red: has GPS but hasn't tapped Go Online */
   /* Backward compat with any cached legacy class name. */
   .captain-marker { display: none; }
 </style>

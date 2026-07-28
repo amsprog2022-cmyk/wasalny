@@ -59,17 +59,13 @@ def data():
     for d in drivers:
         pos = av.get_position(d.id)
         if pos is None:
-            continue    # phase 1.5: skip captains with no GPS
-        # Only show captains who consider themselves online (tapped Go
-        # Online, presence.online == True). We deliberately DON'T check
-        # `is_live` (heartbeat within 60s) — a captain with a weak
-        # signal or a long gap between GPS pings still has a valid last
-        # known location the admin wants to see. Ghost sessions from a
-        # force-quit are the acceptable cost; the matching engine has
-        # its own `is_live` filter so they never receive rides anyway.
+            continue    # no known location — nothing to draw
+        # Show everyone with a position. The frontend colours them by
+        # state (green / orange / grey) so we can visually diagnose when
+        # a captain thinks they're online but the server disagrees.
+        # Matching engine has its own is_live filter — nothing here can
+        # accidentally route a ride to a ghost.
         presence = av.get_presence(d.id)
-        if not presence.online:
-            continue
         lat, lng = pos
         ride = on_trip_by_driver.get(d.id)
         captains_out.append({
@@ -83,6 +79,7 @@ def data():
             "wa_id": d.wa_id,
             "lat": lat,
             "lng": lng,
+            "online": presence.online,
             "available": presence.available,
             "on_trip_ride_id": (ride.id if ride else None),
         })
