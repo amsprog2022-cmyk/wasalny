@@ -60,16 +60,15 @@ def data():
         pos = av.get_position(d.id)
         if pos is None:
             continue    # phase 1.5: skip captains with no GPS
-        # A captain that force-quit the app never emits driver_offline, so
-        # the Redis GEO entry keeps returning coords forever. Filter by
-        # `is_live` (online + heartbeat within 60s) and opportunistically
-        # clear the ghost so it doesn't fool matching either.
+        # Only show captains who consider themselves online (tapped Go
+        # Online, presence.online == True). We deliberately DON'T check
+        # `is_live` (heartbeat within 60s) — a captain with a weak
+        # signal or a long gap between GPS pings still has a valid last
+        # known location the admin wants to see. Ghost sessions from a
+        # force-quit are the acceptable cost; the matching engine has
+        # its own `is_live` filter so they never receive rides anyway.
         presence = av.get_presence(d.id)
-        if not presence.is_live:
-            try:
-                av.clear_position(d.id)
-            except Exception:
-                pass
+        if not presence.online:
             continue
         lat, lng = pos
         ride = on_trip_by_driver.get(d.id)
