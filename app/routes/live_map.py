@@ -64,7 +64,12 @@ def data():
         presence = av.get_presence(d.id)
         ride = on_trip_by_driver.get(d.id)
         captains_out.append({
+            # Emitted as `driver_id` so the frontend can key markers with
+            # the same field the socket's driver_position_update sends —
+            # otherwise the initial snapshot markers can't be updated in
+            # place and duplicate every ping. `id` kept as an alias.
             "id": d.id,
+            "driver_id": d.id,
             "name": d.name,
             "wa_id": d.wa_id,
             "lat": lat,

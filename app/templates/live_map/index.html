@@ -53,16 +53,41 @@
   .status-assigned     { background: #1a3d1a; color: #7ED957; }
   .status-started      { background: #1e3a5a; color: #74a4ff; }
   .empty-note { color: #9aa0aa; font-size: 12px; padding: 24px 8px; text-align: center; }
-  /* Marker dot styling */
-  .captain-marker {
+  /* Marker: label above a colored dot */
+  .captain-marker-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: pointer;
+    /* Anchor is bottom of the dot — the label sits above so the dot's
+       tip is what actually pins to the coordinate. */
+    transform: translateY(0);
+  }
+  .captain-label {
+    background: rgba(20, 20, 28, 0.92);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15);
+    white-space: nowrap;
+    margin-bottom: 4px;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+  }
+  .captain-dot {
     width: 16px; height: 16px; border-radius: 50%;
     border: 2px solid #fff;
     box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
-    cursor: pointer;
   }
-  .captain-marker.available { background: #22c55e; }  /* green: idle & ready */
-  .captain-marker.busy      { background: #F57C00; }  /* orange: on a trip */
-  .captain-marker.unavailable { background: #6b7280; }  /* grey: online but not accepting */
+  .captain-dot.available   { background: #22c55e; }  /* green: idle & ready */
+  .captain-dot.busy        { background: #F57C00; }  /* orange: on a trip */
+  .captain-dot.unavailable { background: #6b7280; }  /* grey: online but not accepting */
+  /* Backward compat with any cached legacy class name. */
+  .captain-marker { display: none; }
 </style>
 
 <div class="live-map-wrap">

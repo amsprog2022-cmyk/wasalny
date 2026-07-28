@@ -49,28 +49,55 @@
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-left');
 
   // -------- helpers --------
-  function upsertMarker(cap) {
-    captains.set(cap.driver_id, cap);
-    const existing = markers.get(cap.driver_id);
-    const el = document.createElement('div');
-    el.className = 'captain-marker ' + (
-      cap.on_trip_ride_id ? 'busy' : (cap.available ? 'available' : 'unavailable')
-    );
-    el.title = `${cap.name || cap.driver_id}` + (cap.on_trip_ride_id ? ' · على رحلة' : '');
+  function _capKey(cap) {
+    // Accept either shape — /live-map/data snapshot emits `driver_id`
+    // (post-fix) but old cached responses / other sockets may still send
+    // `id`. Fall back so nothing gets keyed by undefined.
+    return cap.driver_id != null ? cap.driver_id : cap.id;
+  }
 
+  function _stateClass(cap) {
+    return cap.on_trip_ride_id
+      ? 'busy'
+      : cap.available ? 'available' : 'unavailable';
+  }
+
+  function upsertMarker(cap) {
+    const id = _capKey(cap);
+    if (id == null) return;
+    // Preserve any earlier fields (e.g. socket had name but this update doesn't)
+    const merged = Object.assign({}, captains.get(id) || {}, cap);
+    captains.set(id, merged);
+
+    const stateCls = _stateClass(merged);
+    const nameText = merged.name || `#${id}`;
+    const titleText = `${nameText}${merged.on_trip_ride_id ? ' · على رحلة' : ''}`;
+
+    const existing = markers.get(id);
     if (existing) {
-      existing.getElement().className = el.className;
-      existing.getElement().title = el.title;
-      existing.setLngLat([cap.lng, cap.lat]);
+      const wrap = existing.getElement();
+      wrap.title = titleText;
+      wrap.querySelector('.captain-label').textContent = nameText;
+      const dot = wrap.querySelector('.captain-dot');
+      dot.className = 'captain-dot ' + stateCls;
+      existing.setLngLat([merged.lng, merged.lat]);
       return;
     }
-    const marker = new maplibregl.Marker({ element: el })
-      .setLngLat([cap.lng, cap.lat])
+
+    const wrap = document.createElement('div');
+    wrap.className = 'captain-marker-wrap';
+    wrap.title = titleText;
+    wrap.innerHTML = `
+      <div class="captain-label">${nameText}</div>
+      <div class="captain-dot ${stateCls}"></div>
+    `;
+    const marker = new maplibregl.Marker({ element: wrap, anchor: 'bottom' })
+      .setLngLat([merged.lng, merged.lat])
       .addTo(map);
-    marker.getElement().addEventListener('click', () => {
-      map.flyTo({ center: [cap.lng, cap.lat], zoom: 15, duration: 800 });
+    wrap.addEventListener('click', () => {
+      map.flyTo({ center: [merged.lng, merged.lat], zoom: 15, duration: 800 });
     });
-    markers.set(cap.driver_id, marker);
+    markers.set(id, marker);
   }
 
   function removeMarker(driverId) {
@@ -134,10 +161,22 @@
   fetch('/live-map/data', { credentials: 'same-origin' })
     .then((r) => r.json())
     .then((data) => {
-      (data.captains || []).forEach(upsertMarker);
+      const caps = data.captains || [];
+      caps.forEach(upsertMarker);
       (data.rides || []).forEach((r) => rides.set(r.id, r));
       updateCounts();
       renderRideList();
+      // Snap to captain(s) so the marker is actually in view — otherwise
+      // a single captain outside Benha centre looks like "nobody online."
+      if (caps.length === 1) {
+        map.jumpTo({ center: [caps[0].lng, caps[0].lat], zoom: 14 });
+      } else if (caps.length > 1) {
+        const bounds = caps.reduce(
+          (b, c) => b.extend([c.lng, c.lat]),
+          new maplibregl.LngLatBounds([caps[0].lng, caps[0].lat], [caps[0].lng, caps[0].lat]),
+        );
+        map.fitBounds(bounds, { padding: 60, duration: 0, maxZoom: 14 });
+      }
     })
     .catch((e) => console.error('live-map snapshot failed', e));
 
