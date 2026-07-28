@@ -100,16 +100,20 @@ def _send(token: Optional[str], title: str, body: str, data: dict | None = None,
                 ),
             ),
             apns=m.APNSConfig(
+                # Time-sensitive interruption for ride offers so they punch
+                # through iOS Focus modes. Passed via custom_data (which
+                # merges into the raw `aps` payload dict) because older
+                # firebase-admin builds don't accept it as an Aps kwarg.
                 headers={"apns-priority": "10"},
                 payload=m.APNSPayload(
                     aps=m.Aps(
                         sound="default",
                         content_available=True,
                         mutable_content=True,
-                        # Time-sensitive interruption for ride offers so
-                        # they punch through Focus modes on iOS.
-                        interruption_level=("time-sensitive"
-                                            if is_ride_offer else None),
+                        custom_data=(
+                            {"interruption-level": "time-sensitive"}
+                            if is_ride_offer else None
+                        ),
                     ),
                 ),
             ),
