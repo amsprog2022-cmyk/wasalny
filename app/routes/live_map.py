@@ -108,7 +108,8 @@ def data():
     return jsonify({"captains": captains_out, "rides": rides_out})
 
 
-@live_map_bp.route("/debug")
+@live_map_bp.route("/debug", strict_slashes=False)
+@live_map_bp.route("/debug/", strict_slashes=False)
 @login_required
 def debug_state():
     """Per-driver raw state dump so admins can see WHY a captain isn't
