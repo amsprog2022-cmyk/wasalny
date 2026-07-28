@@ -106,3 +106,46 @@ def data():
         })
 
     return jsonify({"captains": captains_out, "rides": rides_out})
+
+
+@live_map_bp.route("/debug")
+@login_required
+def debug_state():
+    """Per-driver raw state dump so admins can see WHY a captain isn't
+    showing on the map. Answers questions like:
+      - Did their GPS ping ever reach Redis? (has_position)
+      - Did they tap Go Online? (online)
+      - When was their last heartbeat? (seconds_since_hb)
+    """
+    import time as _time
+    drivers = (
+        Driver.query
+        .filter(Driver.is_active.is_(True))
+        .filter(Driver.deleted_at.is_(None))
+        .all()
+    )
+    now = _time.time()
+    out = []
+    for d in drivers:
+        pos = av.get_position(d.id)
+        presence = av.get_presence(d.id)
+        out.append({
+            "driver_id": d.id,
+            "name": d.name,
+            "wa_id": d.wa_id,
+            "approved": getattr(d, "approval_status", "unknown"),
+            "has_position": pos is not None,
+            "lat": pos[0] if pos else None,
+            "lng": pos[1] if pos else None,
+            "presence_online": presence.online,
+            "presence_available": presence.available,
+            "presence_zone_id": presence.zone_id,
+            "last_hb": presence.last_hb,
+            "seconds_since_hb":
+                (round(now - presence.last_hb, 1) if presence.last_hb else None),
+            "is_live": presence.is_live,
+        })
+    return jsonify({
+        "total_active_drivers": len(drivers),
+        "drivers": out,
+    })
