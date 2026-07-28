@@ -60,8 +60,18 @@ def data():
         pos = av.get_position(d.id)
         if pos is None:
             continue    # phase 1.5: skip captains with no GPS
-        lat, lng = pos
+        # A captain that force-quit the app never emits driver_offline, so
+        # the Redis GEO entry keeps returning coords forever. Filter by
+        # `is_live` (online + heartbeat within 60s) and opportunistically
+        # clear the ghost so it doesn't fool matching either.
         presence = av.get_presence(d.id)
+        if not presence.is_live:
+            try:
+                av.clear_position(d.id)
+            except Exception:
+                pass
+            continue
+        lat, lng = pos
         ride = on_trip_by_driver.get(d.id)
         captains_out.append({
             # Emitted as `driver_id` so the frontend can key markers with
