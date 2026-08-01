@@ -311,7 +311,7 @@
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        alert('فشل: ' + (err.error || resp.status));
+        alert(err.message || ('فشل: ' + (err.error || resp.status)));
         btn.disabled = false; btn.textContent = 'أرسل الرحلة';
         return;
       }

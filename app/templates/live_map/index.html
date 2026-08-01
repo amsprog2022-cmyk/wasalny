@@ -87,6 +87,13 @@
   .captain-dot.busy        { background: #F57C00; }  /* orange: on a trip */
   .captain-dot.unavailable { background: #6b7280; }  /* grey: online but toggled 'busy' */
   .captain-dot.offline     { background: #ef4444; }  /* red: has GPS but hasn't tapped Go Online */
+  /* Ghost: online in Redis but no heartbeat >60s — probably a killed app.
+     Dashed border + muted fill signals "don't dispatch to this one". */
+  .captain-dot.ghost {
+    background: #6b7280;
+    border-style: dashed;
+    opacity: 0.7;
+  }
   /* Backward compat with any cached legacy class name. */
   .captain-marker { display: none; }
 
@@ -157,6 +164,7 @@
   .state-dot.busy        { background: #F57C00; }
   .state-dot.unavailable { background: #6b7280; }
   .state-dot.offline     { background: #ef4444; }
+  .state-dot.ghost       { background: #6b7280; opacity: 0.5; border: 1px dashed #fff; }
 
   /* Modal shared style (place + assign-from-alerts) */
   .lm-modal {
@@ -198,6 +206,81 @@
     background: transparent; border: 1px solid rgba(255,255,255,0.15);
     color: #9aa0aa;
   }
+
+  /* Floating "+ new ride" FAB, mirrors the search box on top-left */
+  .new-ride-fab {
+    position: absolute; top: 12px; right: 12px; z-index: 6;
+    background: #F57C00; color: #fff;
+    border: 0; border-radius: 999px;
+    padding: 10px 16px;
+    font-weight: 800; font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  .new-ride-fab:hover { filter: brightness(1.08); }
+
+  /* Create-ride modal: bigger than the alert picker, two-column feel */
+  .create-ride-body {
+    display: grid; gap: 12px;
+  }
+  .cr-field label {
+    display: block; font-size: 12px; color: #9aa0aa; margin-bottom: 4px;
+  }
+  .cr-field input, .cr-field .location-preview {
+    width: 100%;
+    background: #1a1a24; border: 1px solid rgba(255,255,255,0.08);
+    color: #fff; font-size: 13px;
+    padding: 8px 10px; border-radius: 8px; outline: none;
+  }
+  .cr-field input:focus { border-color: #F57C00; }
+  .cr-inline { display: flex; gap: 8px; }
+  .cr-inline > * { flex: 1; }
+  .location-preview {
+    display: flex; justify-content: space-between; align-items: center;
+    min-height: 36px;
+    color: #9aa0aa;
+  }
+  .location-preview.set { color: #fff; }
+  .cr-location-controls {
+    display: flex; gap: 6px; margin-top: 6px;
+  }
+  .cr-location-controls .lm-btn { padding: 5px 10px; font-size: 11px; }
+  .cr-search-results {
+    background: #14141c;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    max-height: 180px; overflow-y: auto;
+    display: none; margin-top: 4px;
+  }
+  .cr-search-results.open { display: block; }
+  .cr-search-results .row {
+    padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  .cr-search-results .row:hover { background: #2a2a3a; }
+  .cr-price-hint {
+    font-size: 11px; color: #9aa0aa; margin-top: 4px;
+  }
+  .cr-nearest-list { margin-top: 8px; }
+  .cr-nearest-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 10px;
+    background: #1a1a24;
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px; margin-bottom: 4px;
+  }
+  .cr-nearest-row .info { font-size: 12px; }
+  .cr-nearest-row .info .n { font-weight: 700; font-size: 13px; }
+  .cr-nearest-row .info .m { color: #9aa0aa; font-size: 11px; margin-top: 2px; }
+  .cr-map-mode-banner {
+    position: absolute; bottom: 20px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(245, 124, 0, 0.95); color: #fff;
+    padding: 10px 18px; border-radius: 999px;
+    font-weight: 700; font-size: 13px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    z-index: 7; display: none;
+  }
+  .cr-map-mode-banner.open { display: block; }
 </style>
 
 <div class="live-map-wrap">
@@ -207,6 +290,12 @@
       <input id="place-search-input" type="text" placeholder="🔍 ابحث عن مكان على الخريطة…" autocomplete="off" />
       <div id="place-results" class="place-results"></div>
     </div>
+    {# Floating "+ new ride" FAB for walk-in / phone-in bookings #}
+    <button id="new-ride-fab" class="new-ride-fab" type="button" onclick="openCreateRideModal()">
+      ➕ رحلة جديدة
+    </button>
+    {# Banner shown while admin is picking pickup/dropoff on the map #}
+    <div id="cr-map-mode" class="cr-map-mode-banner"></div>
   </div>
   <aside class="live-map-sidebar">
     <div class="live-map-header">
@@ -225,6 +314,66 @@
       <div id="captain-list"></div>
     </div>
   </aside>
+</div>
+
+{# Modal: create a walk-in / phone-in ride from scratch #}
+<div id="create-ride-modal" class="lm-modal">
+  <div class="lm-modal-inner" style="max-width: 620px;">
+    <h3>➕ رحلة جديدة (walk-in)</h3>
+    <p style="color: #9aa0aa; font-size: 12px; margin-bottom: 12px;">
+      اكتب رقم العميل، حدد الاستلام والوجهة، وهنعرضلك أقرب كباتن متاحين دلوقتي.
+    </p>
+
+    <div class="create-ride-body">
+      <div class="cr-inline">
+        <div class="cr-field" style="flex: 2;">
+          <label>رقم واتساب العميل</label>
+          <input id="cr-wa-id" type="tel" placeholder="مثلاً 201234567890" dir="ltr" />
+        </div>
+        <div class="cr-field">
+          <label>اسم العميل (اختياري)</label>
+          <input id="cr-name" type="text" placeholder="أحمد" />
+        </div>
+      </div>
+
+      <div class="cr-field">
+        <label>نقطة الاستلام</label>
+        <div id="cr-pickup-preview" class="location-preview">— لسه محدد —</div>
+        <div class="cr-location-controls">
+          <input id="cr-pickup-search" type="text" placeholder="🔍 ابحث…" style="flex:2;" autocomplete="off" />
+          <button type="button" class="lm-btn lm-btn-ghost" onclick="setCrClickMode('pickup')">دوس على الخريطة</button>
+        </div>
+        <div id="cr-pickup-results" class="cr-search-results"></div>
+      </div>
+
+      <div class="cr-field">
+        <label>الوجهة</label>
+        <div id="cr-dropoff-preview" class="location-preview">— لسه محدد —</div>
+        <div class="cr-location-controls">
+          <input id="cr-dropoff-search" type="text" placeholder="🔍 ابحث…" style="flex:2;" autocomplete="off" />
+          <button type="button" class="lm-btn lm-btn-ghost" onclick="setCrClickMode('dropoff')">دوس على الخريطة</button>
+        </div>
+        <div id="cr-dropoff-results" class="cr-search-results"></div>
+      </div>
+
+      <div class="cr-field">
+        <label>السعر (ج.م)</label>
+        <input id="cr-price" type="number" step="1" min="0" placeholder="اتركه فارغ عشان يحسبه تلقائياً" />
+        <div id="cr-price-hint" class="cr-price-hint"></div>
+      </div>
+
+      <div class="cr-field">
+        <label>أقرب الكباتن للنقطة (متاحين ومتصلين)</label>
+        <div id="cr-nearest-list" class="cr-nearest-list">
+          <div class="empty-note" style="padding: 12px 0;">حدد نقطة الاستلام الأول.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+      <button class="lm-btn lm-btn-ghost" onclick="closeCreateRideModal()">إلغاء</button>
+    </div>
+  </div>
 </div>
 
 {# Modal: pick a pending no_driver alert to assign to a clicked captain #}

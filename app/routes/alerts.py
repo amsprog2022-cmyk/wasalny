@@ -253,6 +253,15 @@ def assign(alert_id: int):
     if driver is None or not driver.is_active:
         return jsonify({"error": "unknown_driver"}), 400
 
+    # Reachability gate. Without this we happily created rides for
+    # ghost captains (app force-quit, phone dead) — the customer would
+    # be told "captain assigned" and then wait forever with no push.
+    if not av.get_presence(driver.id).is_live:
+        return jsonify({
+            "error": "captain_not_reachable",
+            "message": "الكابتن ده مش متصل بالسيرفر دلوقتي، اختار كابتن تاني.",
+        }), 409
+
     # Create the ride. Uses source="admin" so it doesn't count against the
     # customer's rate limit and is easy to distinguish in reports.
     try:
@@ -290,48 +299,13 @@ def assign(alert_id: int):
     db.session.commit()
 
     # Confirm to the customer on WhatsApp with the captain's full info +
-    # persist the outbound message to the conversation inbox so admins
-    # see it in the timeline (previously it went to the customer's phone
-    # but never landed in our own record — impossible to audit).
+    # persist the outbound message to the conversation inbox. Shared
+    # helper — same body as the admin-created ride flow.
     customer = Customer.query.get(alert.customer_id)
-    customer_notified = False
-    if customer is not None and customer.wa_id:
-        car_bits = []
-        if getattr(driver, "car_model", None):
-            car_bits.append(driver.car_model)
-        if getattr(driver, "car_color", None):
-            car_bits.append(driver.car_color)
-        car_line = " · ".join(car_bits)
-        plate = getattr(driver, "car_plate", None)
-        wa_display = (
-            driver.wa_id
-            if driver.wa_id and driver.wa_id.startswith("+")
-            else f"+{driver.wa_id}" if driver.wa_id else ""
-        )
-        body_lines = [
-            f"🚗 لقينالك كابتن! ده {driver.name} جاي دلوقتي.",
-        ]
-        if car_line:
-            body_lines.append(f"العربية: {car_line}")
-        if plate:
-            body_lines.append(f"اللوحة: {plate}")
-        if wa_display:
-            body_lines.append(f"📞 رقمه: {wa_display}")
-            body_lines.append("لو محتاج تكلمه اضغط على الرقم.")
-        body = "\n".join(body_lines)
-        try:
-            resp = whatsapp.send_text(customer.wa_id, body)
-            customer_notified = True
-            wa_msg_id = None
-            if isinstance(resp, dict):
-                wa_msg_id = (resp.get("messages") or [{}])[0].get("id")
-            # Persist so it shows up on the admin conversation timeline.
-            from app.services import whatsapp_booking
-            whatsapp_booking._persist_outbound(
-                customer, body, msg_type="text", wa_message_id=wa_msg_id,
-            )
-        except WhatsAppError as e:
-            current_app.logger.warning("assign confirm to customer failed: %s", e)
+    from app.services import dispatch_notifications
+    customer_notified = dispatch_notifications.notify_customer_of_assignment(
+        customer, driver
+    )
 
     return jsonify({
         "ride_id": ride.id,

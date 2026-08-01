@@ -81,6 +81,11 @@ def data():
             "lng": lng,
             "online": presence.online,
             "available": presence.available,
+            # is_live == online AND heartbeat within 60s. False here means
+            # the captain's Redis row is stale (app force-quit, phone died
+            # etc). Frontend colours these as "ghost" so the admin doesn't
+            # try to assign a ride to a dead session.
+            "is_live": presence.is_live,
             "on_trip_ride_id": (ride.id if ride else None),
         })
 
@@ -120,6 +125,203 @@ def search_places():
     if len(q) < 3:
         return jsonify([])
     return jsonify(rg.search_places(q, limit=6))
+
+
+@live_map_bp.route("/nearest-captains")
+@login_required
+def nearest_captains():
+    """Rank live, available captains by distance to a pickup point.
+
+    Query: ?lat=&lng=&limit=5&radius_km=10
+    Filters:
+      - presence.is_live (online + heartbeat within 60s)
+      - not currently on a trip
+      - approved (if the column exists)
+    Response: [{driver_id, name, wa_id, car_model, car_plate, car_color,
+                distance_km, lat, lng}]
+    """
+    try:
+        lat = float(request.args.get("lat"))
+        lng = float(request.args.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat_lng_required"}), 400
+    limit = int(request.args.get("limit") or 5)
+    radius_km = float(request.args.get("radius_km") or 10)
+
+    rows = av.nearest_drivers(lat, lng, radius_km=radius_km, limit=max(limit * 3, 15))
+    if not rows:
+        return jsonify([])
+
+    driver_ids = [did for did, _dist, _pt in rows]
+    drivers_by_id = {
+        d.id: d for d in Driver.query.filter(Driver.id.in_(driver_ids)).all()
+    }
+    # Filter out captains that are on a live trip so we don't offer a busy one.
+    busy_ids = {
+        r.driver_id for r in Ride.query
+        .filter(Ride.driver_id.in_(driver_ids))
+        .filter(Ride.status.in_(("assigned", "started")))
+        .with_entities(Ride.driver_id).all()
+    }
+
+    out = []
+    for did, dist, (dlat, dlng) in rows:
+        d = drivers_by_id.get(did)
+        if d is None or not d.is_active or getattr(d, "deleted_at", None):
+            continue
+        if hasattr(d, "approval_status") and d.approval_status != "approved":
+            continue
+        if did in busy_ids:
+            continue
+        if not av.get_presence(did).is_live:
+            continue
+        out.append({
+            "driver_id": did,
+            "name": d.name,
+            "wa_id": d.wa_id,
+            "car_model": getattr(d, "car_model", None),
+            "car_color": getattr(d, "car_color", None),
+            "car_plate": getattr(d, "car_plate", None),
+            "distance_km": round(dist, 2),
+            "lat": dlat,
+            "lng": dlng,
+        })
+        if len(out) >= limit:
+            break
+    return jsonify(out)
+
+
+@live_map_bp.route("/quote")
+@login_required
+def quote():
+    """Wrap pricing.quote_by_coords so the admin create-ride modal can
+    show a suggested fare. Returns {price_egp, distance_km}. Admin-
+    editable pricing knobs (Setting table) are already read by pricing."""
+    try:
+        pl = float(request.args.get("pickup_lat"))
+        plng = float(request.args.get("pickup_lng"))
+        dl = float(request.args.get("dropoff_lat"))
+        dlng = float(request.args.get("dropoff_lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "coords_required"}), 400
+    # Reuse quote_by_coords — customer_id=0 is fine, only used for pending
+    # fees (walk-ins have none).
+    from app.services import pricing as pricing_svc
+    q = pricing_svc.quote_by_coords(
+        customer_id=0,
+        pickup_lat=pl, pickup_lng=plng,
+        dropoff_lat=dl, dropoff_lng=dlng,
+    )
+    return jsonify({
+        "price_egp": float(q.ride_price_egp),
+        "distance_km": q.distance_km,
+    })
+
+
+@live_map_bp.route("/create-ride", methods=["POST"])
+@login_required
+def create_ride():
+    """Admin-created walk-in ride: pick customer by wa_id, pin pickup +
+    dropoff on the map, pick a live captain, dispatch directly. Skips
+    the broadcast auction — captain gets a direct assignment push.
+
+    Body JSON:
+      customer_wa_id : str  required
+      customer_name  : str  optional (only used when creating the row)
+      pickup_lat/lng : float required
+      dropoff_lat/lng: float required
+      price_egp      : float optional (overrides the coord-based quote)
+      driver_id      : int  required (must be live + not busy)
+    """
+    from app import db
+    from app.models.customer import Customer
+    from app.services import ride_lifecycle
+    from app.services import dispatch_notifications
+    from decimal import Decimal
+
+    data = request.get_json(silent=True) or {}
+    wa_id = (data.get("customer_wa_id") or "").strip()
+    if not wa_id:
+        return jsonify({"error": "customer_wa_id_required"}), 400
+    try:
+        pl  = float(data["pickup_lat"])
+        plng = float(data["pickup_lng"])
+        dl  = float(data["dropoff_lat"])
+        dlng = float(data["dropoff_lng"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "coords_required"}), 400
+    try:
+        driver_id = int(data.get("driver_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "driver_id_required"}), 400
+
+    driver = Driver.query.get(driver_id)
+    if driver is None or not driver.is_active:
+        return jsonify({"error": "unknown_driver"}), 400
+    if not av.get_presence(driver.id).is_live:
+        return jsonify({
+            "error": "captain_not_reachable",
+            "message": "الكابتن ده مش متصل بالسيرفر دلوقتي، اختار كابتن تاني.",
+        }), 409
+    # Reject if the captain already has a live trip in Postgres.
+    busy = Ride.query.filter(
+        Ride.driver_id == driver.id,
+        Ride.status.in_(("assigned", "started")),
+    ).first()
+    if busy is not None:
+        return jsonify({
+            "error": "captain_busy",
+            "message": "الكابتن ده على رحلة تانية دلوقتي، اختار كابتن تاني.",
+        }), 409
+
+    # Find or create the customer. Walk-ins have no password — they can
+    # still be looked up by phone if they ever install the app later.
+    customer = Customer.query.filter_by(wa_id=wa_id).first()
+    if customer is None:
+        customer = Customer(
+            wa_id=wa_id,
+            name=(data.get("customer_name") or "").strip() or None,
+        )
+        db.session.add(customer)
+        db.session.commit()
+
+    try:
+        ride, pending_ids = ride_lifecycle.create_ride(
+            customer_id=customer.id,
+            pickup_lat=pl, pickup_lng=plng,
+            dropoff_lat=dl, dropoff_lng=dlng,
+            source="admin",
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Override the auto-quote if admin typed a specific price.
+    price_raw = data.get("price_egp")
+    if price_raw not in (None, ""):
+        try:
+            new_price = float(price_raw)
+            ride.price_egp = Decimal(f"{new_price:.2f}")
+            from app.services import settings as _settings_svc
+            rate = _settings_svc.get_pricing()["commission_rate"]
+            ride.commission_egp = (Decimal(f"{new_price:.2f}") * rate).quantize(Decimal("0.01"))
+            db.session.commit()
+        except (TypeError, ValueError):
+            pass  # keep the auto-quote if input was bad
+
+    try:
+        ride_lifecycle.assign(ride, driver_id=driver.id, pending_fee_ids=pending_ids)
+    except ValueError as e:
+        return jsonify({"error": f"assign_failed: {e}"}), 409
+
+    customer_notified = dispatch_notifications.notify_customer_of_assignment(
+        customer, driver
+    )
+    return jsonify({
+        "ride_id": ride.id,
+        "driver_id": driver.id,
+        "customer_id": customer.id,
+        "customer_notified": customer_notified,
+    })
 
 
 @live_map_bp.route("/pending-alerts")

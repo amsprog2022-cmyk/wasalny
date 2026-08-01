@@ -57,12 +57,17 @@
   }
 
   function _stateClass(cap) {
-    // Priority: on-trip > offline-but-known-position > online-but-unavailable > available.
-    // "offline-known" means Redis has a GEO coord for them but presence.online is
-    // false — usually a captain that opened the app + granted GPS but hasn't
-    // tapped "Go Online" yet. Rendering them in red makes the mismatch obvious.
+    // Priority ordering matters — a captain on a trip is "busy" even
+    // if their heartbeat lapsed briefly. Beyond that:
+    //   busy     — currently on an active ride (orange)
+    //   offline  — Redis has GPS but presence.online is false (red)
+    //   ghost    — online but heartbeat is stale (dashed grey) — app
+    //              probably force-quit; NOT safe to dispatch
+    //   available — green, actually reachable
+    //   unavailable — online + fresh but toggled busy (grey)
     if (cap.on_trip_ride_id) return 'busy';
     if (cap.online === false) return 'offline';
+    if (cap.is_live === false) return 'ghost';
     return cap.available ? 'available' : 'unavailable';
   }
 
@@ -255,6 +260,258 @@
   socket.on('disconnect', () => console.log('live-map socket disconnected'));
 
   // ============================================================
+  // Create-ride modal (walk-in / phone-in)
+  // ============================================================
+  const crModal = document.getElementById('create-ride-modal');
+  const crMapMode = document.getElementById('cr-map-mode');
+  const crPickupPreview = document.getElementById('cr-pickup-preview');
+  const crDropoffPreview = document.getElementById('cr-dropoff-preview');
+  const crPriceHint = document.getElementById('cr-price-hint');
+  const crNearestList = document.getElementById('cr-nearest-list');
+
+  // In-modal state
+  const crState = {
+    pickup: null,   // {lat, lng, label}
+    dropoff: null,
+    clickMode: null,  // 'pickup' | 'dropoff' | null
+    pickupMarker: null,
+    dropoffMarker: null,
+    quoteTimer: null,
+    nearestTimer: null,
+  };
+
+  window.openCreateRideModal = function () {
+    crModal.classList.add('open');
+  };
+  window.closeCreateRideModal = function () {
+    crModal.classList.remove('open');
+    setCrClickMode(null);
+    // Keep the entered form + pins around in case admin reopens.
+  };
+
+  window.setCrClickMode = function (mode) {
+    crState.clickMode = mode;
+    if (mode === 'pickup') {
+      crMapMode.textContent = 'دوس على الخريطة لتحديد نقطة الاستلام';
+      crMapMode.classList.add('open');
+      crModal.classList.remove('open');   // let admin see the map
+    } else if (mode === 'dropoff') {
+      crMapMode.textContent = 'دوس على الخريطة لتحديد الوجهة';
+      crMapMode.classList.add('open');
+      crModal.classList.remove('open');
+    } else {
+      crMapMode.classList.remove('open');
+    }
+  };
+
+  // Map click handler: only active when user tapped one of the "دوس على الخريطة" buttons
+  map.on('click', async (e) => {
+    if (!crState.clickMode) return;
+    const { lat, lng } = e.lngLat;
+    const label = await _reverseGeocode(lat, lng);
+    _setLocation(crState.clickMode, { lat, lng, label });
+    setCrClickMode(null);
+    crModal.classList.add('open');
+  });
+
+  async function _reverseGeocode(lat, lng) {
+    // Best-effort — if it fails, show coords as label.
+    try {
+      const r = await fetch(`/api/v1/rides/place-name?lat=${lat}&lng=${lng}`, {
+        credentials: 'same-origin',
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.label) return j.label;
+      }
+    } catch (_) {}
+    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  }
+
+  function _setLocation(kind, loc) {
+    crState[kind] = loc;
+    const el = kind === 'pickup' ? crPickupPreview : crDropoffPreview;
+    el.classList.add('set');
+    el.innerHTML = `<span>📍 ${escapeHtml(loc.label)}</span>
+                    <span style="color:#9aa0aa;font-size:11px;">${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}</span>`;
+    _updatePin(kind);
+    _refreshQuote();
+    if (kind === 'pickup') _refreshNearest();
+  }
+
+  function _updatePin(kind) {
+    const loc = crState[kind];
+    if (!loc) return;
+    const existing = kind === 'pickup' ? crState.pickupMarker : crState.dropoffMarker;
+    if (existing) existing.remove();
+    const el = document.createElement('div');
+    el.style.cssText = `width:20px;height:20px;border-radius:50%;background:${kind === 'pickup' ? '#22c55e' : '#ef4444'};border:3px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,0.4);`;
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([loc.lng, loc.lat]).addTo(map);
+    if (kind === 'pickup') crState.pickupMarker = marker;
+    else crState.dropoffMarker = marker;
+  }
+
+  function _refreshQuote() {
+    clearTimeout(crState.quoteTimer);
+    if (!crState.pickup || !crState.dropoff) { crPriceHint.textContent = ''; return; }
+    crState.quoteTimer = setTimeout(async () => {
+      try {
+        const { pickup: p, dropoff: d } = crState;
+        const r = await fetch(
+          `/live-map/quote?pickup_lat=${p.lat}&pickup_lng=${p.lng}&dropoff_lat=${d.lat}&dropoff_lng=${d.lng}`,
+          { credentials: 'same-origin' },
+        );
+        if (!r.ok) { crPriceHint.textContent = ''; return; }
+        const j = await r.json();
+        crPriceHint.textContent = `السعر المقترح: ${Math.round(j.price_egp)} ج.م (المسافة ${j.distance_km.toFixed(1)} كم)`;
+      } catch (_) { crPriceHint.textContent = ''; }
+    }, 400);
+  }
+
+  function _refreshNearest() {
+    clearTimeout(crState.nearestTimer);
+    if (!crState.pickup) {
+      crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">حدد نقطة الاستلام الأول.</div>';
+      return;
+    }
+    crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">بنبحث…</div>';
+    crState.nearestTimer = setTimeout(async () => {
+      try {
+        const { lat, lng } = crState.pickup;
+        const r = await fetch(`/live-map/nearest-captains?lat=${lat}&lng=${lng}&limit=6`, { credentials: 'same-origin' });
+        const rows = await r.json();
+        _renderNearest(rows);
+      } catch (e) {
+        crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">حصل خطأ في البحث.</div>';
+      }
+    }, 300);
+  }
+
+  function _renderNearest(rows) {
+    if (!rows || rows.length === 0) {
+      crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">مفيش كباتن متاحين في المنطقة دي دلوقتي.</div>';
+      return;
+    }
+    crNearestList.innerHTML = rows.map((c) => {
+      const car = [c.car_model, c.car_color].filter(Boolean).join(' · ') || '—';
+      return `
+        <div class="cr-nearest-row">
+          <div class="info">
+            <div class="n">🟢 ${escapeHtml(c.name || '#' + c.driver_id)} · ${c.distance_km.toFixed(1)} كم</div>
+            <div class="m">${escapeHtml(car)}${c.car_plate ? ' · ' + escapeHtml(c.car_plate) : ''}</div>
+          </div>
+          <button class="lm-btn" data-driver="${c.driver_id}">اسند</button>
+        </div>`;
+    }).join('');
+    crNearestList.querySelectorAll('.lm-btn').forEach((btn) => {
+      btn.addEventListener('click', () => submitCreateRide(parseInt(btn.getAttribute('data-driver'), 10), btn));
+    });
+  }
+
+  async function submitCreateRide(driverId, btn) {
+    const waId = document.getElementById('cr-wa-id').value.trim();
+    if (!waId) { alert('اكتب رقم العميل الأول'); return; }
+    if (!crState.pickup || !crState.dropoff) { alert('حدد نقطة الاستلام والوجهة الأول'); return; }
+    const priceRaw = document.getElementById('cr-price').value.trim();
+    const price = priceRaw ? parseFloat(priceRaw) : null;
+    const name = document.getElementById('cr-name').value.trim() || null;
+
+    btn.disabled = true; btn.textContent = 'جاري…';
+    try {
+      const resp = await fetch('/live-map/create-ride', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          customer_wa_id: waId,
+          customer_name: name,
+          pickup_lat: crState.pickup.lat,
+          pickup_lng: crState.pickup.lng,
+          dropoff_lat: crState.dropoff.lat,
+          dropoff_lng: crState.dropoff.lng,
+          price_egp: price,
+          driver_id: driverId,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        alert(data.message || ('فشل: ' + (data.error || resp.status)));
+        btn.disabled = false; btn.textContent = 'اسند';
+        return;
+      }
+      const okMsg = data.customer_notified
+        ? 'الرحلة اتسندت والعميل اتبعتله واتساب.'
+        : 'الرحلة اتسندت للكابتن (مقدرناش نبعت واتساب للعميل).';
+      alert(okMsg);
+      // Clear the form + pins for the next walk-in.
+      _resetCreateRideForm();
+      closeCreateRideModal();
+    } catch (e) {
+      alert('حصل خطأ: ' + e);
+      btn.disabled = false; btn.textContent = 'اسند';
+    }
+  }
+
+  function _resetCreateRideForm() {
+    document.getElementById('cr-wa-id').value = '';
+    document.getElementById('cr-name').value = '';
+    document.getElementById('cr-price').value = '';
+    document.getElementById('cr-pickup-search').value = '';
+    document.getElementById('cr-dropoff-search').value = '';
+    crPriceHint.textContent = '';
+    crPickupPreview.classList.remove('set');
+    crPickupPreview.textContent = '— لسه محدد —';
+    crDropoffPreview.classList.remove('set');
+    crDropoffPreview.textContent = '— لسه محدد —';
+    if (crState.pickupMarker) { crState.pickupMarker.remove(); crState.pickupMarker = null; }
+    if (crState.dropoffMarker) { crState.dropoffMarker.remove(); crState.dropoffMarker = null; }
+    crState.pickup = null;
+    crState.dropoff = null;
+    crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">حدد نقطة الاستلام الأول.</div>';
+  }
+
+  // Nominatim search inside the create-ride modal (mirrors the map-top
+  // search but writes into the pickup/dropoff fields instead of pinning).
+  ['pickup', 'dropoff'].forEach((kind) => {
+    const input = document.getElementById(`cr-${kind}-search`);
+    const results = document.getElementById(`cr-${kind}-results`);
+    let t = null;
+    input.addEventListener('input', () => {
+      clearTimeout(t);
+      const q = input.value.trim();
+      if (q.length < 3) { results.classList.remove('open'); return; }
+      t = setTimeout(async () => {
+        try {
+          const r = await fetch(`/live-map/search-places?q=${encodeURIComponent(q)}`, { credentials: 'same-origin' });
+          const list = await r.json();
+          _renderCrSearch(kind, results, list);
+        } catch (_) { results.classList.remove('open'); }
+      }, 300);
+    });
+  });
+
+  function _renderCrSearch(kind, results, list) {
+    if (!list || list.length === 0) {
+      results.innerHTML = '<div class="row" style="color:#9aa0aa;">مفيش نتايج</div>';
+      results.classList.add('open');
+      return;
+    }
+    results.innerHTML = list.map((p, i) =>
+      `<div class="row" data-i="${i}">${escapeHtml(p.label)}</div>`
+    ).join('');
+    results.classList.add('open');
+    results.querySelectorAll('.row').forEach((row, i) => {
+      row.addEventListener('click', () => {
+        const p = list[i];
+        _setLocation(kind, { lat: p.lat, lng: p.lng, label: p.label });
+        results.classList.remove('open');
+        document.getElementById(`cr-${kind}-search`).value = p.label;
+      });
+    });
+  }
+
+  // ============================================================
   // Place search — floating input top-left of the map. Debounced
   // 350ms → hits /live-map/search-places (admin-session-auth proxy
   // over Nominatim). Selecting a result drops a temporary red pin
@@ -352,7 +609,9 @@
     captainListEl.innerHTML = filtered.map((c) => {
       const stateCls = _stateClass(c);
       const stateLabel = c.on_trip_ride_id ? 'على رحلة'
-        : (c.online === false ? 'مش شغال' : (c.available ? 'متاح' : 'مشغول'));
+        : (c.online === false ? 'مش شغال'
+          : (c.is_live === false ? 'مش متصل'
+          : (c.available ? 'متاح' : 'مشغول')));
       const id = _capKey(c);
       return `
         <button class="captain-row" data-id="${id}">
@@ -452,7 +711,7 @@
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        alert('فشل: ' + (err.error || resp.status));
+        alert(err.message || ('فشل: ' + (err.error || resp.status)));
         btn.disabled = false; btn.textContent = 'اسند';
         return;
       }
