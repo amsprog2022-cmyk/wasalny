@@ -50,6 +50,11 @@ class Ride(db.Model):
 
     status = db.Column(db.String(24), default="new", nullable=False, index=True)
     source = db.Column(db.String(16), default="app", nullable=False)
+    # Vehicle-type bucket the customer picked on the home cards.
+    # "private" is the current auto-broadcast flow; the other three
+    # (suzuki, delivery, vip) stay in `broadcasting` waiting for admin
+    # manual dispatch — see rides_api.rides_create.
+    service_kind = db.Column(db.String(20), default="private", nullable=False)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     assigned_at = db.Column(db.DateTime)
@@ -93,6 +98,7 @@ class Ride(db.Model):
             "no_show_fee_egp": float(self.no_show_fee_egp or 0),
             "status": self.status,
             "source": self.source,
+            "service_kind": self.service_kind,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "assigned_at": self.assigned_at.isoformat() if self.assigned_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,

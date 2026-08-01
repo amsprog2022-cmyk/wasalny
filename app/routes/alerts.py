@@ -41,26 +41,31 @@ def index():
     )
     handoffs = [a for a in open_alerts if a.kind == "ai_handoff"]
     no_driver = [a for a in open_alerts if a.kind == "no_driver"]
-    other = [a for a in open_alerts if a.kind not in ("ai_handoff", "no_driver")]
+    service_requests = [a for a in open_alerts if a.kind == "service_request"]
+    other = [a for a in open_alerts if a.kind not in ("ai_handoff", "no_driver", "service_request")]
 
     # Preload customer info for handoff rows
     cust_ids = {a.customer_id for a in open_alerts if a.customer_id}
     customers = {c.id: c for c in Customer.query.filter(Customer.id.in_(cust_ids)).all()} if cust_ids else {}
 
-    # Preload the underlying rides for no_driver rows so we can pre-fill the
-    # assign modal (pickup zone, destination, price) without a second lookup.
+    # Preload the underlying rides for no_driver + service_request rows so
+    # we can pre-fill the assign modal (pickup zone, destination, price)
+    # without a second lookup.
     from app.models.ride import Ride
-    ride_ids = {a.ride_id for a in no_driver if a.ride_id}
+    ride_ids = {a.ride_id for a in no_driver + service_requests if a.ride_id}
     rides = {r.id: r for r in Ride.query.filter(Ride.id.in_(ride_ids)).all()} if ride_ids else {}
 
+    from app.models.driver import SERVICE_KIND_LABELS_AR
     return render_template(
         "alerts/index.html",
         handoffs=handoffs,
         no_driver=no_driver,
+        service_requests=service_requests,
         other=other,
         customers=customers,
         rides=rides,
         parse_json=json.loads,
+        service_kind_labels=SERVICE_KIND_LABELS_AR,
     )
 
 
@@ -160,6 +165,9 @@ def api_available_captains():
     from app.extensions import get_redis
 
     pickup_zone_id = request.args.get("from_zone_id", type=int)
+    # For non-private service_requests admin needs to see only matching
+    # kind drivers (e.g. only suzuki drivers for a سوزوكي request).
+    service_kind = (request.args.get("service_kind") or "").strip().lower() or None
 
     q = (
         Driver.query
@@ -169,6 +177,8 @@ def api_available_captains():
     # Approved status column exists on Driver in this repo (approval_status)
     if hasattr(Driver, "approval_status"):
         q = q.filter(Driver.approval_status == "approved")
+    if service_kind:
+        q = q.filter(Driver.service_kind == service_kind)
 
     drivers = q.all()
 

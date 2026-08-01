@@ -87,6 +87,18 @@
           <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">رجّع كلمة السر للافتراضية</button>
         </form>
       </div>
+
+      <form method="post" action="{{ url_for('drivers.update_service_kind', driver_id=driver.id) }}"
+            class="mt-4 flex items-center gap-2">
+        <label class="text-xs text-text-muted">نوع الخدمة:</label>
+        <select name="service_kind" class="input" style="width: auto; min-width: 180px;">
+          <option value="private"  {% if driver.service_kind == 'private' %}selected{% endif %}>ملاكي</option>
+          <option value="suzuki"   {% if driver.service_kind == 'suzuki' %}selected{% endif %}>سوزوكي</option>
+          <option value="delivery" {% if driver.service_kind == 'delivery' %}selected{% endif %}>دليفري موتوسيكل</option>
+          <option value="vip"      {% if driver.service_kind == 'vip' %}selected{% endif %}>VIP</option>
+        </select>
+        <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">احفظ</button>
+      </form>
       {% if driver.suspended_until %}
         <p class="text-text-muted text-xs mt-3">موقف لحد: {{ driver.suspended_until.strftime('%H:%M · %d %b') }}</p>
       {% endif %}

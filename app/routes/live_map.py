@@ -147,6 +147,9 @@ def nearest_captains():
         return jsonify({"error": "lat_lng_required"}), 400
     limit = int(request.args.get("limit") or 5)
     radius_km = float(request.args.get("radius_km") or 10)
+    # Optional service_kind filter — the admin service_request assign
+    # modal passes this so a سوزوكي request only sees suzuki drivers.
+    service_kind = (request.args.get("service_kind") or "").strip().lower() or None
 
     rows = av.nearest_drivers(lat, lng, radius_km=radius_km, limit=max(limit * 3, 15))
     if not rows:
@@ -170,6 +173,8 @@ def nearest_captains():
         if d is None or not d.is_active or getattr(d, "deleted_at", None):
             continue
         if hasattr(d, "approval_status") and d.approval_status != "approved":
+            continue
+        if service_kind and getattr(d, "service_kind", "private") != service_kind:
             continue
         if did in busy_ids:
             continue

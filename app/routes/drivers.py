@@ -112,6 +112,7 @@ def create():
             car_plate=request.form.get("car_plate", "").strip() or None,
             car_color=request.form.get("car_color", "").strip() or None,
             category=request.form.get("category", "economy"),
+            service_kind=request.form.get("service_kind", "private"),
             notes=request.form.get("notes", "").strip() or None,
             created_by_admin_id=current_user.id,
             must_change_password=True,
@@ -191,6 +192,26 @@ def unsuspend(driver_id: int):
     driver.suspended_until = None
     db.session.commit()
     flash("Captain unsuspended.", "success")
+    return redirect(url_for("drivers.show", driver_id=driver_id))
+
+
+@drivers_bp.route("/<int:driver_id>/service-kind", methods=["POST"])
+@login_required
+def update_service_kind(driver_id: int):
+    """Change which of the 4 customer-facing service cards this driver
+    serves. Filters what admin service_request assign modals show."""
+    if not current_user.is_admin:
+        flash("Admins only.", "error")
+        return redirect(url_for("drivers.show", driver_id=driver_id))
+    from app.models.driver import SERVICE_KINDS
+    kind = (request.form.get("service_kind") or "").strip().lower()
+    if kind not in SERVICE_KINDS:
+        flash("نوع خدمة غير معروف.", "error")
+        return redirect(url_for("drivers.show", driver_id=driver_id))
+    driver = Driver.query.get_or_404(driver_id)
+    driver.service_kind = kind
+    db.session.commit()
+    flash(f"نوع الخدمة اتحفظ: {kind}", "success")
     return redirect(url_for("drivers.show", driver_id=driver_id))
 
 

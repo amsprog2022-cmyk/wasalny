@@ -96,6 +96,7 @@ def create_ride(
     dropoff_lat: float | None = None,
     dropoff_lng: float | None = None,
     source: str = "app",
+    service_kind: str = "private",
 ) -> tuple[Ride, list[int]]:
     """Create a `new` ride.
 
@@ -192,6 +193,7 @@ def create_ride(
         no_show_fee_egp=pending_fees,
         status="new",
         source=source,
+        service_kind=service_kind,
     )
     db.session.add(ride)
     db.session.flush()

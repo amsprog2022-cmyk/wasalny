@@ -58,6 +58,82 @@
     </div>
   </section>
 
+  {# ---------- Non-private service requests (سوزوكي / دليفري / VIP) ---------- #}
+  <section class="mb-6">
+    <h2 class="font-bold mb-3">
+      🛺 طلبات خدمات خاصة
+      <span class="text-text-muted text-sm">({{ service_requests|length }})</span>
+    </h2>
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">الخدمة</th>
+            <th class="text-right px-4 py-3">الرحلة</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in service_requests %}
+            {% set r = rides.get(a.ride_id) %}
+            {% set c = customers.get(a.customer_id) %}
+            {% set payload = parse_json(a.payload_json or '{}') %}
+            {% set kind = payload.service_kind or 'private' %}
+            <tr class="border-t border-white/5 align-top">
+              <td class="px-4 py-3 text-text-muted whitespace-nowrap">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3">
+                <span class="inline-block px-2 py-1 rounded"
+                      style="background: {% if kind == 'suzuki' %}#3a2a1a{% elif kind == 'delivery' %}#1a3d1a{% elif kind == 'vip' %}#3a1a3a{% else %}#2a2a3a{% endif %};
+                             color: {% if kind == 'suzuki' %}#F57C00{% elif kind == 'delivery' %}#7ED957{% elif kind == 'vip' %}#c084fc{% else %}#fff{% endif %};
+                             font-weight: 700; font-size: 12px;">
+                  {{ service_kind_labels.get(kind, kind) }}
+                </span>
+              </td>
+              <td class="px-4 py-3">
+                {% if a.ride_id %}
+                  <a href="{{ url_for('rides.show', ride_id=a.ride_id) }}" class="text-primary hover:underline">رحلة #{{ a.ride_id }}</a>
+                  {% if r %}
+                    <div class="text-xs text-text-muted">
+                      {{ r.pickup_address or (r.from_zone.name_ar if r.from_zone else '—') }}
+                      {% if r.dropoff_address or r.to_zone %}
+                        ← {{ r.dropoff_address or r.to_zone.name_ar }}
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                {% else %} — {% endif %}
+                {% if c and c.wa_id %}
+                  <div class="text-xs text-text-muted mt-1">
+                    📞 <a href="tel:+{{ c.wa_id }}" class="text-primary hover:underline">+{{ c.wa_id }}</a>
+                  </div>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-left whitespace-nowrap">
+                {% if r %}
+                <button type="button" class="btn-primary js-assign-btn"
+                        style="padding: 6px 14px; font-size: 12px;"
+                        data-alert-id="{{ a.id }}"
+                        data-customer-name="{% if c %}{{ c.name or c.wa_id }}{% else %}عميل{% endif %}"
+                        data-service-kind="{{ kind }}"
+                        data-pickup-zone-id="{{ r.from_zone_id or '' }}"
+                        data-dropoff-zone-id="{{ r.to_zone_id or '' }}"
+                        data-price-egp="{{ r.price_egp or '' }}">
+                  اسند لكابتن
+                </button>
+                {% endif %}
+                <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
+                  <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">تم</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="px-4 py-8 text-center text-text-muted">مفيش طلبات دلوقتي.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section>
     <h2 class="font-bold mb-3">🚗 رحلات مالقيتش لها كابتن <span class="text-text-muted text-sm">({{ no_driver|length }})</span></h2>
     <div class="card p-0 overflow-hidden">
@@ -182,10 +258,22 @@
     return z ? z.id : '';
   }
 
+  // Which service_kind the current modal is dispatching. Non-null =>
+  // filter available captains to matching kind only.
+  let _serviceKind = null;
+  const SERVICE_KIND_LABELS = {
+    private: 'ملاكي', suzuki: 'سوزوكي', delivery: 'دليفري موتوسيكل', vip: 'VIP',
+  };
+
   async function openAssignModal(alertId, customerName, pickupSlug, dropoffSlug, hints) {
     _alertId = alertId;
     hints = hints || {};
-    document.getElementById('assignCustomer').textContent = 'اسند رحلة لـ ' + customerName;
+    _serviceKind = hints.serviceKind || null;
+    const kindLabel = _serviceKind && _serviceKind !== 'private'
+      ? ` · ${SERVICE_KIND_LABELS[_serviceKind] || _serviceKind}`
+      : '';
+    document.getElementById('assignCustomer').textContent =
+      'اسند رحلة لـ ' + customerName + kindLabel;
     document.getElementById('assignPrice').value = hints.priceEgp || '';
 
     // Load zones (cache after first load).
@@ -228,7 +316,11 @@
 
   async function refreshDrivers() {
     const fromId = document.getElementById('assignFrom').value;
-    const url = "{{ url_for('alerts.api_available_captains') }}" + (fromId ? `?from_zone_id=${fromId}` : '');
+    const qs = new URLSearchParams();
+    if (fromId) qs.set('from_zone_id', fromId);
+    if (_serviceKind && _serviceKind !== 'private') qs.set('service_kind', _serviceKind);
+    const qsStr = qs.toString();
+    const url = "{{ url_for('alerts.api_available_captains') }}" + (qsStr ? '?' + qsStr : '');
     const r = await fetch(url);
     const list = await r.json();
     const sel = document.getElementById('assignDriver');
@@ -262,6 +354,7 @@
             pickupZoneId: btn.dataset.pickupZoneId || '',
             dropoffZoneId: btn.dataset.dropoffZoneId || '',
             priceEgp: btn.dataset.priceEgp || '',
+            serviceKind: btn.dataset.serviceKind || '',
           },
         );
       });

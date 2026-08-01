@@ -7,6 +7,19 @@ DRIVER_CATEGORIES = ("economy", "business", "premium")
 DISCIPLINE_STATUSES = ("active", "warned", "suspended", "banned")
 APPROVAL_STATUSES = ("pending", "approved", "rejected")
 
+# The vehicle-type buckets exposed on the customer app's home cards.
+# "private" is the default (regular ملاكي car — auto-broadcast). The
+# other three are admin-dispatch only: the customer's ride lands as
+# a service_request AdminAlert and an admin manually assigns a driver
+# whose service_kind matches.
+SERVICE_KINDS = ("private", "suzuki", "delivery", "vip")
+SERVICE_KIND_LABELS_AR = {
+    "private": "ملاكي",
+    "suzuki": "سوزوكي",
+    "delivery": "دليفري موتوسيكل",
+    "vip": "VIP",
+}
+
 
 class Driver(db.Model):
     __tablename__ = "drivers"
@@ -28,6 +41,10 @@ class Driver(db.Model):
     car_plate = db.Column(db.String(30))
     car_color = db.Column(db.String(40))
     category = db.Column(db.String(20), default="economy", nullable=False)
+    # Which of the four customer-facing service cards this driver serves.
+    # Admin dispatch of non-private rides is filtered by this column so
+    # a سوزوكي request only sees suzuki drivers, etc.
+    service_kind = db.Column(db.String(20), default="private", nullable=False)
     photo_url = db.Column(db.String(500))
 
     # Reputation

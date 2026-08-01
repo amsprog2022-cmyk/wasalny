@@ -301,6 +301,24 @@ def _apply_lightweight_migrations(app):
                         f"ALTER TABLE rides ADD COLUMN {col} {coltype}"
                     ))
 
+        # Phase 4.5 — service_kind on drivers + rides. Existing rows default
+        # to 'private' so the current auto-broadcast flow is unchanged.
+        for table in ("drivers", "rides"):
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS service_kind "
+                    "VARCHAR(20) DEFAULT 'private' NOT NULL"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text(f"PRAGMA table_info({table})")
+                ).fetchall()}
+                if "service_kind" not in existing:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN service_kind "
+                        "VARCHAR(20) DEFAULT 'private' NOT NULL"
+                    ))
+
         # Phase 3.1 — WhatsApp GPS booking session state. We stash the free
         # text + geocoded coords across turns so a customer can send pickup
         # in one message and dropoff in the next.
@@ -326,7 +344,7 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE ai_sessions ADD COLUMN {col} {sqlite_type}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind ensured")
 
 
 def _init_firebase_admin(app):
