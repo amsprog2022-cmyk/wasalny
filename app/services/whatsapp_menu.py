@@ -44,8 +44,20 @@ _TEXT_ALIASES = {
     "delivery": ["3", "٣", "دليفري", "ديليفري", "توصيل", "موتوسيكل", "موتسيكل", "delivery"],
     "vip":      ["4", "٤", "vip", "في اي بي", "فاخره", "فاخرة"],
 }
-# Normalize the alias table once at import so lookups are cheap.
+
+# Only these may match inside a longer reply. The rest are everyday words
+# — "عايز عربية" is someone asking for a ride, not picking a menu row, so
+# it must still get the menu.
+_SUBSTRING_ALIASES = {
+    "private":  ["ملاكي", "ملاكى"],
+    "suzuki":   ["سوزوكي", "سوزوكى", "توك توك", "توكتوك", "تكتك", "suzuki", "tuktuk"],
+    "delivery": ["دليفري", "ديليفري", "موتوسيكل", "موتسيكل", "delivery"],
+    "vip":      ["في اي بي"],
+}
+
+# Normalize the alias tables once at import so lookups are cheap.
 _TEXT_ALIASES = {k: [_normalize(a) for a in v] for k, v in _TEXT_ALIASES.items()}
+_SUBSTRING_ALIASES = {k: [_normalize(a) for a in v] for k, v in _SUBSTRING_ALIASES.items()}
 
 MENU_BODY = (
     "أهلاً بيك في وصلني بنها 🚖\n\n"
@@ -80,10 +92,11 @@ def match_service_kind(text: str) -> str | None:
         for alias in aliases:
             if norm == alias:
                 return kind
-    # Second pass: allow "عايز سوزوكي" / "سوزوكي لو سمحت" style short replies.
-    for kind, aliases in _TEXT_ALIASES.items():
+    # Second pass: allow "عايز سوزوكي" / "سوزوكي لو سمحت" style short replies,
+    # but only for names unambiguous enough to appear mid-sentence.
+    for kind, aliases in _SUBSTRING_ALIASES.items():
         for alias in aliases:
-            if len(alias) >= 4 and alias in norm:
+            if alias in norm:
                 return kind
     return None
 
