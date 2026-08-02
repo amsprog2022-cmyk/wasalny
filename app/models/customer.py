@@ -23,6 +23,10 @@ class Customer(db.Model):
     fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
     fcm_updated_at = db.Column(db.DateTime)
 
+    # Last time we sent this WhatsApp customer the "download the app" nudge.
+    # Throttles the advert so a regular rider isn't spammed every trip.
+    app_promo_sent_at = db.Column(db.DateTime)
+
     # Soft-delete: preserve trip history + referential integrity while
     # blocking login and clearing PII. Required by App Store + Play Store
     # policies (in-app account deletion).

@@ -764,55 +764,10 @@ def rides_create():
         # Admin-dispatch queue: mark broadcasting so the customer sees
         # the standard "waiting" state + gets broadcast_started socket,
         # then create a service_request AdminAlert so ops picks it up.
-        _queue_service_request(ride, pending_ids)
+        from app.services import service_requests
+        service_requests.queue_service_request(ride)
 
     return jsonify(ride.to_dict()), 201
-
-
-def _queue_service_request(ride, pending_fee_ids):
-    """Non-private rides skip the matching auction — an admin manually
-    assigns a driver of the matching service_kind. We still flip the
-    ride to `broadcasting` so the customer app's waiting screen fires,
-    then emit a service_request AdminAlert (new kind, reuses the same
-    /alerts queue infrastructure).
-    """
-    from app.models.ai_session import AdminAlert
-    from app.models.driver import SERVICE_KIND_LABELS_AR
-    import json as _json
-    try:
-        ride_lifecycle.mark_broadcasting(ride)
-    except ValueError:
-        pass  # already broadcasting, fine
-    try:
-        alert = AdminAlert(
-            kind="service_request",
-            payload_json=_json.dumps({
-                "service_kind": ride.service_kind,
-                "service_kind_ar": SERVICE_KIND_LABELS_AR.get(ride.service_kind, ride.service_kind),
-                "pickup_address": ride.pickup_address,
-                "dropoff_address": ride.dropoff_address,
-                "pickup_lat": ride.pickup_lat,
-                "pickup_lng": ride.pickup_lng,
-                "customer_wa_id": (ride.customer.wa_id if ride.customer else None),
-            }, ensure_ascii=False),
-            customer_id=ride.customer_id,
-            ride_id=ride.id,
-        )
-        db.session.add(alert)
-        db.session.commit()
-        from app import socketio
-        socketio.emit(
-            "service_request_new",
-            {
-                "id": alert.id,
-                "ride_id": ride.id,
-                "service_kind": ride.service_kind,
-                "customer_id": ride.customer_id,
-            },
-            namespace="/inbox",
-        )
-    except Exception as e:  # noqa: BLE001
-        current_app.logger.warning("service_request queue failed: %s", e)
 
 
 @rides_api_bp.get("/rides/place-name")

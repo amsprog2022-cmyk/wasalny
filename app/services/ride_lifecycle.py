@@ -270,19 +270,12 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     )
 
     # WhatsApp customers don't have our app — send them a real WhatsApp text
-    # so they see the captain's name and phone as well.
-    if ride.source == "whatsapp" and ride.customer is not None:
+    # with the captain's car and phone, then the "download the app" nudge.
+    # Same helper the admin assign flows use so the copy never diverges.
+    if ride.source == "whatsapp" and ride.customer is not None and driver is not None:
         try:
-            from app.services import whatsapp as _wa
-            from app.services.whatsapp import WhatsAppError
-            captain_wa = (driver.wa_id if driver else "") or ""
-            plate_part = f" · {car_plate}" if car_plate else ""
-            body = (
-                f"🚗 كابتن جاي: {driver_name}{plate_part}\n"
-                f"رقمه: +{captain_wa}\n"
-                f"لو محتاج تكلمه اضغط على الرقم."
-            )
-            _wa.send_text(ride.customer.wa_id, body)
+            from app.services import dispatch_notifications
+            dispatch_notifications.notify_customer_of_assignment(ride.customer, driver)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("WhatsApp captain-assigned notify failed: %s", e)
 

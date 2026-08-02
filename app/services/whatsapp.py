@@ -45,6 +45,54 @@ def send_text(to_wa_id: str, body: str) -> dict:
     return _post(payload)
 
 
+def send_interactive_list(
+    to_wa_id: str,
+    body: str,
+    button_text: str,
+    rows: list[dict],
+    header: Optional[str] = None,
+    footer: Optional[str] = None,
+    section_title: str = " ",
+) -> dict:
+    """Send a tappable list message. Same 24h window rule as send_text.
+
+    `rows` is a list of {"id", "title", "description"}. Meta rejects the
+    whole message if any field overruns, so we truncate to the documented
+    limits rather than letting a long Arabic label 400 the request.
+    """
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_wa_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body[:1024]},
+            "action": {
+                "button": button_text[:20],
+                "sections": [
+                    {
+                        "title": section_title[:24],
+                        "rows": [
+                            {
+                                "id": str(r["id"])[:200],
+                                "title": str(r["title"])[:24],
+                                "description": str(r.get("description") or "")[:72],
+                            }
+                            for r in rows[:10]
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+    if header:
+        payload["interactive"]["header"] = {"type": "text", "text": header[:60]}
+    if footer:
+        payload["interactive"]["footer"] = {"text": footer[:60]}
+    return _post(payload)
+
+
 def send_template(
     to_wa_id: str,
     template_name: str,

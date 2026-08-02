@@ -69,4 +69,13 @@ def notify_customer_of_assignment(customer: Customer, driver: Driver) -> bool:
     except Exception as e:  # noqa: BLE001
         current_app.logger.warning("assignment persist failed: %s", e)
 
+    # Now that they've got a captain, nudge them toward the app. Throttled
+    # inside send_app_promo so a regular WhatsApp rider isn't advertised at
+    # after every single trip.
+    try:
+        from app.services import whatsapp_menu
+        whatsapp_menu.send_app_promo(customer)
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("app promo after assignment failed: %s", e)
+
     return True

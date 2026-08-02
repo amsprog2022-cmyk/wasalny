@@ -1,4 +1,6 @@
 """Meta WhatsApp webhook: verification (GET) + incoming events (POST)."""
+from __future__ import annotations
+
 import logging
 
 import eventlet
@@ -66,7 +68,14 @@ def receive():
                     and persisted.conversation.kind == "customer"
                     and persisted.conversation.customer is not None
                 )
-                if is_customer_msg and persisted.msg_type == "text" and persisted.body:
+                if is_customer_msg and msg.get("type") == "interactive":
+                    row_id = _interactive_reply_id(msg)
+                    if row_id:
+                        _spawn_ai_booking(
+                            persisted.conversation.customer.id,
+                            {"kind": "menu_choice", "row_id": row_id},
+                        )
+                elif is_customer_msg and persisted.msg_type == "text" and persisted.body:
                     _spawn_ai_booking(
                         persisted.conversation.customer.id,
                         {"kind": "text", "body": persisted.body},
@@ -94,11 +103,22 @@ def receive():
     return "", 200
 
 
+def _interactive_reply_id(msg: dict) -> str | None:
+    """Pull the tapped row/button id out of an interactive reply."""
+    interactive = msg.get("interactive") or {}
+    for key in ("list_reply", "button_reply"):
+        reply = interactive.get(key)
+        if isinstance(reply, dict) and reply.get("id"):
+            return str(reply["id"])
+    return None
+
+
 def _spawn_ai_booking(customer_id: int, payload: dict) -> None:
     """Run the Gemini booking pipeline in a greenlet so the webhook returns
     fast. `payload` is one of:
       {"kind": "text", "body": "<user message>"}
       {"kind": "location", "lat": <float>, "lng": <float>}
+      {"kind": "menu_choice", "row_id": "svc_private"}
     """
     app = current_app._get_current_object()
 

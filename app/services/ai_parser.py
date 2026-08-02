@@ -68,13 +68,18 @@ def _build_prompt(
     user_message: str,
     prior: dict | None = None,
     active_ride: dict | None = None,
+    service_kind: str | None = None,
 ) -> str:
     """Compose the Gemini prompt.
 
-    `prior`       — partial state from a prior turn ({from, to})
-    `active_ride` — dict describing the customer's current in-flight ride if any,
-                    so the AI can answer 'where is my captain?' contextually
-                    and route cancel/complaint intents to the right ride.
+    `prior`        — partial state from a prior turn ({from, to})
+    `active_ride`  — dict describing the customer's current in-flight ride if any,
+                     so the AI can answer 'where is my captain?' contextually
+                     and route cancel/complaint intents to the right ride.
+    `service_kind` — which of the four services the customer already picked
+                     off the WhatsApp menu. Changes what we still need to ask
+                     for: private rides need only a pickup, the admin-dispatched
+                     kinds need a destination too.
     """
     zones = Zone.query.filter_by(is_active=True).order_by(Zone.id.asc()).all()
     zone_lines = "\n".join(f"- {z.name_ar}  (slug: {z.slug})" for z in zones)
@@ -104,6 +109,29 @@ def _build_prompt(
         if active_ride.get("driver_name"):
             ride_line += f"  - الكابتن: {active_ride['driver_name']}\n"
 
+    service_line = ""
+    if service_kind:
+        from app.models.driver import SERVICE_KIND_LABELS_AR
+        label = SERVICE_KIND_LABELS_AR.get(service_kind, service_kind)
+        service_line = (
+            f"\n✅ العميل اختار خدمة: {label}. ماتسألوش تاني عن نوع الخدمة.\n"
+        )
+        if service_kind == "private":
+            service_line += (
+                "  المطلوب منه دلوقتي: مكان الاستقلال بس. الوجهة اختيارية "
+                "لأن الكابتن هيتفق معاه عليها لما يوصل.\n"
+            )
+        elif service_kind == "delivery":
+            service_line += (
+                "  المطلوب منه دلوقتي: مكان استلام الطلب + العنوان اللي "
+                "الطلب رايح ليه. الاتنين لازم.\n"
+            )
+        else:
+            service_line += (
+                "  المطلوب منه دلوقتي: مكان الاستقلال + الوجهة. الاتنين لازم "
+                "لأن الإدارة هي اللي هتبعتله كابتن.\n"
+            )
+
     return f"""أنت مساعد ودود لتطبيق وصلني بنها للأجرة في مدينة بنها بمصر.
 مهمتك تتعرف على قصد العميل من كلامه وترجعه في JSON منظّم.
 
@@ -128,7 +156,7 @@ def _build_prompt(
 
 للمرجعية بس، ده بعض المناطق المخدومة (اتركهم null في الـ slug، بس ممكن تستخدمهم لتفهم مصر أفضل):
 {zone_lines}
-{prior_line}{ride_line}
+{prior_line}{ride_line}{service_line}
 رسالة العميل:
 \"\"\"{user_message}\"\"\"
 
@@ -218,6 +246,7 @@ def parse_message(
     user_message: str,
     prior: dict | None = None,
     active_ride: dict | None = None,
+    service_kind: str | None = None,
 ) -> ParseResult:
     """Attempt to parse the message via Gemini.
 
@@ -228,7 +257,9 @@ def parse_message(
     ride so Gemini can answer 'where is my captain?' contextually and route
     cancel/complaint intents to the right ride.
     """
-    prompt = _build_prompt(user_message, prior=prior, active_ride=active_ride)
+    prompt = _build_prompt(
+        user_message, prior=prior, active_ride=active_ride, service_kind=service_kind,
+    )
 
     try:
         raw = _call_gemini(prompt)

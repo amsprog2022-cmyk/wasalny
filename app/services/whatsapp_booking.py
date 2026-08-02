@@ -41,8 +41,10 @@ from app.services import rate_limit
 from app.services import reverse_geocode as rg
 from app.services import ride_lifecycle
 from app.services import matching
+from app.services import service_requests
 from app.services import stickers as stickers_svc
 from app.services import whatsapp
+from app.services import whatsapp_menu as wa_menu
 from app.services.whatsapp import WhatsAppError
 
 
@@ -128,6 +130,7 @@ def _persist_outbound(
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("inbox emit for AI outbound failed: %s", e)
     except Exception as e:  # noqa: BLE001
+        db.session.rollback()
         current_app.logger.warning("persist AI outbound failed: %s", e)
 
 
@@ -269,19 +272,34 @@ def _log_gemini_call(
         db.session.add(row)
         db.session.commit()
     except Exception as e:  # noqa: BLE001
+        # Roll back so a failed metrics write doesn't poison the session for
+        # the rest of the pipeline — the ride itself matters far more.
+        db.session.rollback()
         current_app.logger.warning("gemini metric log failed: %s", e)
 
 
 def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     """Fire ride_lifecycle.create_ride when we have enough session state.
 
-    Requires pickup coords. Dropoff coords are best-effort — missing them
-    just means the captain sets the destination + price on arrival (same
-    as legacy WhatsApp flow).
+    Always requires pickup coords. What else is required depends on the
+    service the customer picked off the menu:
+
+      private       — dropoff optional; the captain agrees the destination
+                      and price on arrival, same as the legacy flow.
+      non-private   — dropoff required, because nobody auto-matches these.
+                      An admin reads both ends off the alert board and
+                      dispatches by hand, so a half-filled request just
+                      means a phone call back to the customer.
 
     Returns a small dict on success, or None if we still need more info.
     """
     if session.partial_pickup_lat is None or session.partial_pickup_lng is None:
+        return None
+
+    kind = session.service_kind or "private"
+    is_private = kind == "private"
+
+    if not is_private and not session.partial_dropoff_text:
         return None
 
     _try_send_sticker(customer.wa_id, "booked", customer=customer)
@@ -294,6 +312,7 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
             dropoff_lat=session.partial_dropoff_lat,
             dropoff_lng=session.partial_dropoff_lng,
             source="whatsapp",
+            service_kind=kind,
         )
     except ValueError as e:
         _try_send(
@@ -307,17 +326,68 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     session.status = "completed"
     db.session.commit()
 
-    # Proactive "we're searching" message — matches the plan-approved UX
-    # decision so the customer isn't left in silence for 2-3 min.
-    ack = (
-        f"🚗 تمام! بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
-        + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address
-           else ".\nالكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.")
-    )
-    _try_send(customer.wa_id, ack, customer=customer)
+    if is_private:
+        # Proactive "we're searching" message — matches the plan-approved UX
+        # decision so the customer isn't left in silence for 2-3 min.
+        ack = (
+            f"🚗 تمام! بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
+            + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address
+               else ".\nالكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.")
+        )
+        _try_send(customer.wa_id, ack, customer=customer)
+        matching.start_matching(ride.id, pending_fee_ids=pending_ids)
+    else:
+        dest = ride.dropoff_address or session.partial_dropoff_text
+        ack = (
+            f"✅ تمام! طلب {wa_menu.label_ar(kind)} اتسجل.\n"
+            f"من: {ride.pickup_address or 'مكانك'}\n"
+            f"إلى: {dest}\n\n"
+            "طلبك راح للإدارة دلوقتي وهنبعتلك كابتن ونبلغك بسعره في أقرب وقت. "
+            "لو حبيت تلغي اكتب: إلغاء"
+        )
+        _try_send(customer.wa_id, ack, customer=customer)
+        service_requests.queue_service_request(ride)
 
-    matching.start_matching(ride.id, pending_fee_ids=pending_ids)
-    return {"handled": True, "action": "ride_created", "ride_id": ride.id}
+    return {"handled": True, "action": "ride_created", "ride_id": ride.id,
+            "service_kind": kind}
+
+
+def _next_question(session: AiSession) -> str:
+    """The one thing we still need from the customer, phrased for their
+    chosen service. Pickup always comes first; a destination is only ever
+    asked for on the admin-dispatched kinds."""
+    if session.partial_pickup_lat is None or session.partial_pickup_lng is None:
+        return (
+            "📍 حضرتك فين دلوقتي؟\n"
+            "اكتبلي اسم المكان، أو ابعتلي موقعك من الواتس: 📎 ← Location ← Send your current location."
+        )
+    if (session.service_kind or "private") == "delivery":
+        return "📦 الطلب رايح فين؟ اكتبلي العنوان."
+    return "🏁 رايح فين؟ اكتبلي اسم المكان."
+
+
+def _apply_service_choice(
+    customer: Customer, session: AiSession, kind: str
+) -> dict:
+    """Lock the chosen service onto the session and move to the next step.
+
+    A pin may already have arrived before the customer picked, so we try
+    to book immediately rather than asking a question we know the answer to.
+    """
+    session.service_kind = kind
+    session.clarify_count = 0
+    db.session.commit()
+
+    booked = _try_book_ride(customer, session)
+    if booked:
+        return booked
+
+    _try_send(
+        customer.wa_id,
+        f"✅ اخترت {wa_menu.label_ar(kind)}.\n\n{_next_question(session)}",
+        customer=customer,
+    )
+    return {"handled": True, "action": "service_chosen", "service_kind": kind}
 
 
 def _apply_pickup_from_pin(session: AiSession, lat: float, lng: float) -> None:
@@ -375,6 +445,7 @@ def process_incoming(customer: Customer, payload) -> dict:
         return {"handled": False, "reason": "bad_payload"}
 
     kind = payload.get("kind")
+    chosen_kind: str | None = None
     if kind == "text":
         message_body = (payload.get("body") or "").strip()
         if not message_body:
@@ -386,6 +457,11 @@ def process_incoming(customer: Customer, payload) -> dict:
         except (KeyError, TypeError, ValueError):
             return {"handled": False, "reason": "bad_location"}
         message_body = f"📍 {pin_lat:.6f},{pin_lng:.6f}"
+    elif kind == "menu_choice":
+        chosen_kind = wa_menu.kind_from_row_id(payload.get("row_id") or "")
+        if chosen_kind is None:
+            return {"handled": False, "reason": "unknown_row"}
+        message_body = f"[{wa_menu.label_ar(chosen_kind)}]"
     else:
         return {"handled": False, "reason": "unknown_kind"}
 
@@ -408,8 +484,35 @@ def process_incoming(customer: Customer, payload) -> dict:
             current_app.logger.warning("cancel keyword failed: %s", e)
             # Fall through to normal handling if cancel errored.
 
+    session = _get_or_open_session(customer.id, customer.wa_id)
+    session.touch(_ttl_minutes())
+
+    # MENU TAP — the customer picked a service off the interactive list.
+    if kind == "menu_choice":
+        return _apply_service_choice(customer, session, chosen_kind)
+
+    # SERVICE GATE — every conversation starts by picking one of the four
+    # services. Until that's on the session we don't call Gemini at all;
+    # we just show the menu. Customers mid-ride skip the gate so they can
+    # still ask "فين الكابتن؟" or cancel without re-picking a service.
+    if not session.service_kind and active_ride is None:
+        if kind == "location":
+            # Pin arrived before they chose — keep it, then ask.
+            _apply_pickup_from_pin(session, pin_lat, pin_lng)
+            db.session.commit()
+            wa_menu.send_service_menu(customer)
+            return {"handled": True, "action": "menu_sent"}
+
+        typed = wa_menu.match_service_kind(message_body)
+        if typed:
+            return _apply_service_choice(customer, session, typed)
+
+        db.session.commit()
+        wa_menu.send_service_menu(customer)
+        return {"handled": True, "action": "menu_sent"}
+
     # Rate-limit per phone — protect Gemini quota from a single abuser.
-    # Location pins skip the limit since they don't call Gemini.
+    # Only text reaches Gemini; pins and menu taps never do.
     if kind == "text":
         allowed, count = rate_limit.check_gemini_limit(customer.wa_id)
         if not allowed:
@@ -425,9 +528,6 @@ def process_incoming(customer: Customer, payload) -> dict:
             )
             return {"handled": True, "action": "rate_limited"}
 
-    session = _get_or_open_session(customer.id, customer.wa_id)
-    session.touch(_ttl_minutes())
-
     # LOCATION PIN — trust it. Attach as pickup and try to book right away
     # (if we already have a dropoff from a prior turn we're good to go).
     if kind == "location":
@@ -437,11 +537,7 @@ def process_incoming(customer: Customer, payload) -> dict:
         if booked:
             return booked
         # We have pickup pin but still no destination — ask for it.
-        _try_send(
-            customer.wa_id,
-            "🌟 وصلت الـ 📍، تمام. تحب تروح فين؟",
-            customer=customer,
-        )
+        _try_send(customer.wa_id, _next_question(session), customer=customer)
         return {"handled": True, "action": "await_dropoff"}
 
     # TEXT — hand to Gemini.
@@ -450,7 +546,12 @@ def process_incoming(customer: Customer, payload) -> dict:
         "to":   session.partial_dropoff_text or session.partial_dropoff_slug,
     }
     t0 = time.time()
-    result = ai_parser.parse_message(message_body, prior=prior, active_ride=active_ride)
+    result = ai_parser.parse_message(
+        message_body,
+        prior=prior,
+        active_ride=active_ride,
+        service_kind=session.service_kind,
+    )
     latency_ms = int((time.time() - t0) * 1000)
     _log_gemini_call(customer, latency_ms=latency_ms, result=result)
 
@@ -553,7 +654,7 @@ def process_incoming(customer: Customer, payload) -> dict:
         db.session.commit()
         _try_send(
             customer.wa_id,
-            result.reply_ar or "🌟 تحب تروح فين؟",
+            result.reply_ar or _next_question(session),
             customer=customer,
         )
         return {"handled": True, "action": "clarify"}
@@ -595,11 +696,5 @@ def process_incoming(customer: Customer, payload) -> dict:
                       message_body=message_body, session_id=session.id)
         return {"handled": True, "action": "handoff"}
     db.session.commit()
-    if session.partial_dropoff_text:
-        prompt = (
-            "تمام 🚗 وحضرتك دلوقتي فين؟ اكتبلي اسم مكانك أو ابعتلي 📍 من الواتس."
-        )
-    else:
-        prompt = result.reply_ar or "أهلاً 🌟 تحب تروح فين؟"
-    _try_send(customer.wa_id, prompt, customer=customer)
+    _try_send(customer.wa_id, _next_question(session), customer=customer)
     return {"handled": True, "action": "await_info"}

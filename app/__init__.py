@@ -344,7 +344,28 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE ai_sessions ADD COLUMN {col} {sqlite_type}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind ensured")
+
+        # WhatsApp service menu — which of the four kinds the customer picked
+        # for this session, and the throttle timestamp for the app advert.
+        wa_menu_columns = [
+            ("ai_sessions", "service_kind",      "VARCHAR(20)"),
+            ("customers",   "app_promo_sent_at", "TIMESTAMP"),
+        ]
+        for table, col, coltype in wa_menu_columns:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text(f"PRAGMA table_info({table})")
+                ).fetchall()}
+                if col not in existing:
+                    sqlite_type = "DATETIME" if coltype == "TIMESTAMP" else coltype
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {sqlite_type}"
+                    ))
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu ensured")
 
 
 def _init_firebase_admin(app):

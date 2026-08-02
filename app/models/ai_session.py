@@ -36,6 +36,11 @@ class AiSession(db.Model):
     partial_dropoff_text = db.Column(db.String(255))
     partial_dropoff_lat = db.Column(db.Float)
     partial_dropoff_lng = db.Column(db.Float)
+
+    # Which of the four services the customer picked off the WhatsApp menu.
+    # NULL means we haven't asked yet — the pipeline sends the menu and
+    # waits rather than assuming a private car.
+    service_kind = db.Column(db.String(20))
     # How many times we've asked the customer for more info in this session.
     # After the second unsuccessful clarify we escalate to a human admin
     # rather than badger them a third time.

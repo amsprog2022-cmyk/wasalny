@@ -70,6 +70,10 @@ def handle_incoming_message(msg: dict, contact: dict) -> Optional[Message]:
     elif msg_type == "location":
         loc = msg.get("location", {})
         body = f"📍 Location: {loc.get('latitude')}, {loc.get('longitude')}"
+    elif msg_type == "interactive":
+        interactive = msg.get("interactive") or {}
+        reply = interactive.get("list_reply") or interactive.get("button_reply") or {}
+        body = reply.get("title") or "[interactive reply]"
     else:
         body = f"[{msg_type} message]"
 
