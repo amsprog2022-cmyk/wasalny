@@ -876,21 +876,36 @@ def rides_accept(ride_id: int):
     if ride.status != "broadcasting":
         return jsonify({"error": "not_broadcasting", "status": ride.status}), 409
     if matching.try_claim(ride_id, did):
-        # try_claim only wins the Redis locks — the matching greenlet does
-        # the actual assign after the pubsub ping. Wait briefly so we can
-        # hand the app a ride that's already 'assigned'; otherwise the app
-        # renders a stale 'broadcasting' trip screen with no buttons.
+        # try_claim only wins the Redis locks — normally the matching greenlet
+        # does the actual assign after the pubsub ping. Wait briefly for it.
         for _ in range(15):          # ≤3s
             time.sleep(0.2)          # eventlet-patched: yields greenlet
             db.session.expire(ride)
             if ride.status == "assigned" and ride.driver_id == did:
                 break
-        payload = ride.to_dict(include_customer_contact=True)
-        if payload.get("status") == "broadcasting":
-            # Assign still in flight — let the app render optimistically.
-            payload["status"] = "assigned"
-            payload["driver_id"] = did
-        return jsonify({"claimed": True, "ride_id": ride_id, "ride": payload})
+
+        # The greenlet may be gone — the broadcast round can time out, the
+        # worker holding it can recycle, or the ride can have been created on
+        # a different worker entirely. Nobody would ever assign, so do it here.
+        # assign() re-checks the status, so a greenlet that beat us to it wins.
+        if ride.status == "broadcasting":
+            try:
+                ride_lifecycle.assign(ride, did)
+            except ValueError:
+                db.session.rollback()
+            db.session.expire(ride)
+
+        if ride.driver_id != did:
+            # Someone else holds it. Drop our locks so this captain can take
+            # the next offer instead of being wedged until the TTL expires.
+            matching.release_claim(ride_id, did)
+            return jsonify({"claimed": False, "error": "already_taken"}), 409
+
+        return jsonify({
+            "claimed": True,
+            "ride_id": ride_id,
+            "ride": ride.to_dict(include_customer_contact=True),
+        })
     return jsonify({"claimed": False, "error": "already_taken"}), 409
 
 

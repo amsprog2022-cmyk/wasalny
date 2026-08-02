@@ -89,6 +89,21 @@ def try_claim(ride_id: int, driver_id: int, ttl_seconds: int = 15) -> bool:
     return True
 
 
+def release_claim(ride_id: int, driver_id: int) -> None:
+    """Undo try_claim's locks when the assign didn't actually land.
+
+    Only deletes keys this driver still owns, so we can't stomp on the
+    captain who legitimately won the ride.
+    """
+    r = _r()
+    driver_lock_key = f"driver:{driver_id}:current_ride"
+    if r.get(driver_lock_key) == str(ride_id):
+        r.delete(driver_lock_key)
+    ride_lock_key = f"ride:{ride_id}:lock"
+    if r.get(ride_lock_key) == str(driver_id):
+        r.delete(ride_lock_key)
+
+
 def _wait_for_accept(ride_id: int, timeout_s: int) -> Optional[int]:
     """Block up to `timeout_s` waiting for a driver to win the lock.
 
