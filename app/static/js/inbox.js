@@ -1,7 +1,10 @@
 /* Wassalny inbox — vanilla JS + Socket.IO */
 (() => {
   let activeConvId = null;
-  const socket = io("/inbox");
+  // websocket-only: the default polling handshake mints the sid on one
+  // gunicorn worker and the upgrade can land on the other, which engineio
+  // rejects as "Invalid session". A single connection stays on one worker.
+  const socket = io("/inbox", { transports: ["websocket"] });
 
   const chatEmpty = document.getElementById("chat-empty");
   const chat = document.getElementById("chat");

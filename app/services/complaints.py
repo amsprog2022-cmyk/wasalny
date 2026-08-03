@@ -78,27 +78,26 @@ def resolve(
     driver_id = ride.driver_id if ride else None
     customer_id = ride.customer_id if ride else None
 
-    if action == "refund" and customer_id and refund_amount_egp is not None:
+    if action in ("refund", "credit") and customer_id and refund_amount_egp is not None:
+        wording = "refund" if action == "refund" else "goodwill credit"
         db.session.add(
             CreditAdjustment(
                 target_kind="customer",
                 target_id=customer_id,
                 amount_egp=refund_amount_egp,
                 direction="credit",
-                reason=f"refund from complaint #{c.id}",
+                reason=f"{wording} from complaint #{c.id}",
                 from_complaint_id=c.id,
             )
         )
-    elif action == "credit" and customer_id and refund_amount_egp is not None:
-        db.session.add(
-            CreditAdjustment(
-                target_kind="customer",
-                target_id=customer_id,
-                amount_egp=refund_amount_egp,
-                direction="credit",
-                reason=f"goodwill credit from complaint #{c.id}",
-                from_complaint_id=c.id,
-            )
+        # The CreditAdjustment row is the paper trail; this is the money.
+        # Without it the customer would see a resolved ticket and no credit.
+        from app.services import wallet as wallet_svc
+        wallet_svc.credit(
+            customer_id, refund_amount_egp,
+            reason="refund" if action == "refund" else "admin_adjust",
+            ride_id=ride.id if ride else None,
+            note=f"شكوى #{c.id}",
         )
     elif action == "warn" and driver_id:
         d = db.session.get(Driver, driver_id)

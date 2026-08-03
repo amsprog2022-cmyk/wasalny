@@ -19,6 +19,11 @@ class Customer(db.Model):
     # need to be prompted to set one on their next login rather than being locked out.
     password_hash = db.Column(db.String(255))
 
+    # Set when the customer proved ownership of the number by sending us a
+    # reverse-OTP message. Nullable: every account created before the flag
+    # REQUIRE_PHONE_VERIFICATION was switched on is unverified.
+    phone_verified_at = db.Column(db.DateTime)
+
     fcm_token = db.Column(db.Text)
     fcm_platform = db.Column(db.String(16))   # 'ios' | 'android'
     fcm_updated_at = db.Column(db.DateTime)

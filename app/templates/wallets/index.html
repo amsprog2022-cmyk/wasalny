@@ -1,0 +1,140 @@
+{% extends "layout/base.html" %}
+{% block title %}الحسابات · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-6xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold">💰 الحسابات</h1>
+    <p class="text-text-muted text-sm">
+      كل الرحلات كاش. الكابتن بيحصل الفلوس من العميل وبيفضل عليه العمولة — لما يسلمها، سجلها هنا.
+    </p>
+  </div>
+
+  <div class="card">
+    <p class="text-text-muted text-sm">إجمالي المستحق على الكباتن</p>
+    <p class="text-3xl font-bold text-primary">{{ '%.0f'|format(total_owed) }} ج.م</p>
+  </div>
+
+  <section>
+    <h2 class="font-bold mb-3 text-primary">كباتن عليهم فلوس ({{ debtors|length }})</h2>
+    {% if debtors %}
+      <div class="card p-0 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-surface-raised text-text-muted">
+            <tr>
+              <th class="text-right px-4 py-3">الكابتن</th>
+              <th class="text-right px-4 py-3">الرقم</th>
+              <th class="text-right px-4 py-3">المستحق</th>
+              <th class="text-right px-4 py-3">تحصيل</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w, d in debtors %}
+              <tr class="border-t border-white/5">
+                <td class="px-4 py-3">
+                  <a href="{{ url_for('drivers.show', driver_id=d.id) }}" class="hover:text-primary">{{ d.name }}</a>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.phone }}</td>
+                <td class="px-4 py-3 font-bold text-danger">{{ '%.0f'|format(w.owed_egp) }} ج.م</td>
+                <td class="px-4 py-3">
+                  <form method="post" action="{{ url_for('wallets.driver_settle', driver_id=d.id) }}" class="flex gap-2">
+                    <input name="amount_egp" type="number" step="0.01" min="0.01"
+                           value="{{ '%.2f'|format(w.owed_egp) }}"
+                           class="input" style="padding: 6px 10px; width: 110px;" />
+                    <input name="note" placeholder="ملاحظات" class="input" style="padding: 6px 10px;" />
+                    <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">استلمت</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card text-center"><p class="text-success">مفيش كابتن عليه فلوس.</p></div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 class="font-bold mb-3 text-text-muted">كباتن ليهم فلوس عندنا ({{ creditors|length }})</h2>
+    {% if creditors %}
+      <div class="card p-0 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-surface-raised text-text-muted">
+            <tr>
+              <th class="text-right px-4 py-3">الكابتن</th>
+              <th class="text-right px-4 py-3">الرقم</th>
+              <th class="text-right px-4 py-3">الرصيد</th>
+              <th class="text-right px-4 py-3">صرف</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w, d in creditors %}
+              <tr class="border-t border-white/5">
+                <td class="px-4 py-3">
+                  <a href="{{ url_for('drivers.show', driver_id=d.id) }}" class="hover:text-primary">{{ d.name }}</a>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.phone }}</td>
+                <td class="px-4 py-3 font-bold text-success">{{ '%.0f'|format(w.balance_egp) }} ج.م</td>
+                <td class="px-4 py-3">
+                  <form method="post" action="{{ url_for('wallets.driver_payout', driver_id=d.id) }}" class="flex gap-2">
+                    <input name="amount_egp" type="number" step="0.01" min="0.01"
+                           value="{{ '%.2f'|format(w.balance_egp) }}"
+                           class="input" style="padding: 6px 10px; width: 110px;" />
+                    <input name="note" placeholder="ملاحظات" class="input" style="padding: 6px 10px;" />
+                    <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">صرفت</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card text-center"><p class="text-text-muted">مفيش.</p></div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 class="font-bold mb-3 text-text-muted">عملاء عندهم رصيد ({{ customer_credit|length }})</h2>
+    <p class="text-text-muted text-xs mb-3">الرصيد ده بيتخصم اوتوماتيك من الكاش اللي العميل هيدفعه في رحلته الجاية.</p>
+    {% if customer_credit %}
+      <div class="card p-0 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-surface-raised text-text-muted">
+            <tr>
+              <th class="text-right px-4 py-3">العميل</th>
+              <th class="text-right px-4 py-3">الرقم</th>
+              <th class="text-right px-4 py-3">الرصيد</th>
+              <th class="text-right px-4 py-3">تعديل</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w, c in customer_credit %}
+              <tr class="border-t border-white/5">
+                <td class="px-4 py-3">
+                  <a href="{{ url_for('customers.show', customer_id=c.id) }}" class="hover:text-primary">{{ c.name or 'عميل' }}</a>
+                </td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ c.phone }}</td>
+                <td class="px-4 py-3 font-bold text-success">{{ '%.0f'|format(w.balance_egp) }} ج.م</td>
+                <td class="px-4 py-3">
+                  <form method="post" action="{{ url_for('wallets.customer_adjust', customer_id=c.id) }}" class="flex gap-2">
+                    <input name="amount_egp" type="number" step="0.01" min="0.01"
+                           class="input" style="padding: 6px 10px; width: 100px;" />
+                    <select name="direction" class="input" style="padding: 6px 10px;">
+                      <option value="credit">إضافة</option>
+                      <option value="debit">خصم</option>
+                    </select>
+                    <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">تنفيذ</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card text-center"><p class="text-text-muted">مفيش.</p></div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

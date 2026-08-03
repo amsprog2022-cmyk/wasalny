@@ -1,4 +1,6 @@
 from datetime import datetime
+from decimal import Decimal
+
 from app import db
 
 
@@ -47,11 +49,17 @@ class Ride(db.Model):
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
     commission_egp = db.Column(db.Numeric(8, 2), nullable=False)
     no_show_fee_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
-    # Captain end-of-trip surcharge (waiting time, detour, tolls). Deducted
-    # from the customer wallet on `POST /rides/<id>/captain-extra`, or booked
-    # as a CustomerPendingFee when the wallet is short. Stored on the ride so
-    # the customer app can render a receipt breakdown.
+    # Captain end-of-trip surcharge (waiting time, detour, tolls) added via
+    # `POST /rides/<id>/captain-extra`. Rides settle in cash, so this simply
+    # raises what the customer hands over — commission_egp is topped up by
+    # the platform's cut of it at the same moment.
     captain_extra_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
+    # Every ride is paid in cash — there is no payment provider. This column is
+    # how much of the total was covered by the customer's wallet credit
+    # (refunds, admin goodwill), so the captain collects that much less cash.
+    # The platform eats it out of its own commission; the captain is always
+    # made whole for `net_egp`.
+    wallet_discount_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
 
     status = db.Column(db.String(24), default="new", nullable=False, index=True)
     source = db.Column(db.String(16), default="app", nullable=False)
@@ -75,6 +83,31 @@ class Ride(db.Model):
     driver = db.relationship("Driver", backref=db.backref("rides", lazy="dynamic"))
     from_zone = db.relationship("Zone", foreign_keys=[from_zone_id])
     to_zone = db.relationship("Zone", foreign_keys=[to_zone_id])
+
+    @property
+    def total_egp(self) -> Decimal:
+        """What the customer actually owes for this ride, all lines included.
+
+        Every money reader should use this rather than `price_egp`, which is
+        only the fare agreed at booking.
+        """
+        return (
+            Decimal(str(self.price_egp or 0))
+            + Decimal(str(self.no_show_fee_egp or 0))
+            + Decimal(str(self.captain_extra_egp or 0))
+        )
+
+    @property
+    def net_egp(self) -> Decimal:
+        """The captain's share — the total minus the platform commission."""
+        return self.total_egp - Decimal(str(self.commission_egp or 0))
+
+    @property
+    def cash_due_egp(self) -> Decimal:
+        """Cash the customer actually hands over — the total less whatever
+        wallet credit covered. Never below zero."""
+        due = self.total_egp - Decimal(str(self.wallet_discount_egp or 0))
+        return due if due > 0 else Decimal("0.00")
 
     def to_dict(self, *, include_customer_contact: bool = False) -> dict:
         """Serialize the ride.
@@ -102,6 +135,11 @@ class Ride(db.Model):
             "commission_egp": float(self.commission_egp),
             "no_show_fee_egp": float(self.no_show_fee_egp or 0),
             "captain_extra_egp": float(self.captain_extra_egp or 0),
+            # Cash the customer hands over, and the captain's share of it.
+            "total_egp": float(self.total_egp),
+            "net_egp": float(self.net_egp),
+            "wallet_discount_egp": float(self.wallet_discount_egp or 0),
+            "cash_due_egp": float(self.cash_due_egp),
             "status": self.status,
             "source": self.source,
             "service_kind": self.service_kind,

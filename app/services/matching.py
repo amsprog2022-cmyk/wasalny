@@ -192,7 +192,7 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
         body_ar = f"من {from_ar} إلى {to_ar} · صافي {net_egp:.0f} ج.م"
     push.send_to_drivers(
         id_list,
-        title="🔔 رحلة جديدة!",
+        title="🔔 رحلة جديدة",
         body=body_ar,
         data={
             "kind": "trip_offered",

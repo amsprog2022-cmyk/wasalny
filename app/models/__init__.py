@@ -16,6 +16,7 @@ from app.models.ops import (
 from app.models.captain_rating import CaptainRatingOfCustomer
 from app.models.setting import Setting
 from app.models.wallet import CustomerWallet, WalletTransaction
+from app.models.intercity_request import IntercityRequest
 
 __all__ = [
     "User",
@@ -44,4 +45,7 @@ __all__ = [
     "AuditLog",
     "CaptainRatingOfCustomer",
     "Setting",
+    "CustomerWallet",
+    "WalletTransaction",
+    "IntercityRequest",
 ]

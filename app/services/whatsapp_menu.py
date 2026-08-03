@@ -1,11 +1,12 @@
 """WhatsApp service menu + app-promo copy.
 
-Every WhatsApp conversation now opens with a tappable list of the four
+Every WhatsApp conversation opens with a tappable list of the two live
 service kinds. Whichever the customer picks is stashed on the AiSession
 and drives the rest of the booking:
 
-  private  → auto-broadcast to the nearest captains (the original flow)
-  others   → queued to the admin dispatch board
+  private   → auto-broadcast to the nearest captains (the original flow)
+  intercity → never matched to a captain. The customer's free text is
+              filed on the /intercity admin board and someone calls back.
 
 Customers on old WhatsApp builds see the list as plain text and type
 their answer instead, so `match_service_kind` also accepts the number,
@@ -29,30 +30,29 @@ IOS_URL = "https://apps.apple.com/eg/app/wasalny-benha/id6792322962"
 ROW_ID_PREFIX = "svc_"
 
 MENU_ROWS = [
-    {"id": f"{ROW_ID_PREFIX}private",  "kind": "private",  "title": "🚗 ملاكي",           "description": "عربية خاصة توصلك لأي مكان"},
-    {"id": f"{ROW_ID_PREFIX}suzuki",   "kind": "suzuki",   "title": "🛺 سوزوكي",          "description": "توك توك للمشاوير القريبة"},
-    {"id": f"{ROW_ID_PREFIX}delivery", "kind": "delivery", "title": "🏍️ دليفري موتوسيكل", "description": "توصيل طلبات وأغراض"},
-    {"id": f"{ROW_ID_PREFIX}vip",      "kind": "vip",      "title": "✨ VIP",             "description": "عربية فاخرة وخدمة مميزة"},
+    {"id": f"{ROW_ID_PREFIX}private",   "kind": "private",   "title": "🚗 ملاكي داخل بنها", "description": "عربية خاصة توصلك جوه بنها"},
+    {"id": f"{ROW_ID_PREFIX}intercity", "kind": "intercity", "title": "🛣️ سفر خارج بنها",   "description": "ملاكي للسفر برة بنها"},
 ]
 
 _ROW_ID_TO_KIND = {r["id"]: r["kind"] for r in MENU_ROWS}
 
 # Typed fallbacks. Keys are already Arabic-normalized + lowercased.
+# suzuki/delivery/vip are gone from the menu, so their old numbers must
+# not linger here — a stale "3" would otherwise select a dead service.
 _TEXT_ALIASES = {
-    "private":  ["1", "١", "ملاكي", "ملاكى", "عربيه", "عربية", "خاصه", "تاكسي", "taxi", "private", "car"],
-    "suzuki":   ["2", "٢", "سوزوكي", "سوزوكى", "توك توك", "توكتوك", "تكتك", "suzuki", "tuktuk"],
-    "delivery": ["3", "٣", "دليفري", "ديليفري", "توصيل", "موتوسيكل", "موتسيكل", "delivery"],
-    "vip":      ["4", "٤", "vip", "في اي بي", "فاخره", "فاخرة"],
+    "private":   ["1", "١", "ملاكي", "ملاكى", "عربيه", "عربية", "خاصه", "تاكسي", "taxi", "private", "car"],
+    "intercity": ["2", "٢", "سفر", "سفريه", "سفرية", "خارج بنها", "بره بنها", "برة بنها", "travel", "intercity"],
 }
 
 # Only these may match inside a longer reply. The rest are everyday words
 # — "عايز عربية" is someone asking for a ride, not picking a menu row, so
 # it must still get the menu.
+#
+# intercity is checked first on purpose: "ملاكي للسفر خارج بنها" contains
+# both patterns and the destination is what actually distinguishes it.
 _SUBSTRING_ALIASES = {
-    "private":  ["ملاكي", "ملاكى"],
-    "suzuki":   ["سوزوكي", "سوزوكى", "توك توك", "توكتوك", "تكتك", "suzuki", "tuktuk"],
-    "delivery": ["دليفري", "ديليفري", "موتوسيكل", "موتسيكل", "delivery"],
-    "vip":      ["في اي بي"],
+    "intercity": ["خارج بنها", "بره بنها", "برة بنها", "سفر"],
+    "private":   ["ملاكي", "ملاكى"],
 }
 
 # Normalize the alias tables once at import so lookups are cheap.
@@ -60,13 +60,11 @@ _TEXT_ALIASES = {k: [_normalize(a) for a in v] for k, v in _TEXT_ALIASES.items()
 _SUBSTRING_ALIASES = {k: [_normalize(a) for a in v] for k, v in _SUBSTRING_ALIASES.items()}
 
 MENU_BODY = (
-    "أهلاً بيك في وصلني بنها 🚖\n\n"
-    "قولنا محتاج إيه النهاردة واختار الخدمة من القائمة:\n\n"
-    "1️⃣ ملاكي — عربية خاصة\n"
-    "2️⃣ سوزوكي — توك توك\n"
-    "3️⃣ دليفري موتوسيكل — توصيل طلبات\n"
-    "4️⃣ VIP — عربية فاخرة\n\n"
-    "دوس على الزرار تحت واختار، أو ابعتلنا رقم الخدمة."
+    "اهلا بيك في وصلني بنها\n\n"
+    "محتاج ايه؟\n"
+    "١. عربية ملاكي داخل بنها\n"
+    "٢. محتاج عربية ملاكي للسفر خارج بنها\n\n"
+    "دوس على الزرار تحت واختار، أو ابعتلنا رقم الخدمة"
 )
 
 PROMO_THROTTLE_DAYS = 7
@@ -106,7 +104,7 @@ def label_ar(kind: str) -> str:
 
 
 def send_service_menu(customer: Customer) -> None:
-    """Send the tappable 4-service list. Falls back to plain text if the
+    """Send the tappable service list. Falls back to plain text if the
     interactive send is rejected (unsupported client, template issues)."""
     from app.services import whatsapp
     from app.services.whatsapp import WhatsAppError
@@ -136,7 +134,7 @@ def send_service_menu(customer: Customer) -> None:
 
 def _promo_body() -> str:
     return (
-        "🎉 جرب تطبيق وصلني بنها واحجز أسرع من غير ما تكلم حد!\n\n"
+        "🎉 جرب تطبيق وصلني بنها واحجز أسرع من غير ما تكلم حد.\n\n"
         "🎁 خصم 10% على رحلتك الجاية من التطبيق.\n\n"
         f"📱 أندرويد:\n{ANDROID_URL}\n\n"
         f"🍏 آيفون:\n{IOS_URL}"

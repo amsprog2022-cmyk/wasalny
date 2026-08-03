@@ -196,7 +196,9 @@
     .catch((e) => console.error('live-map snapshot failed', e));
 
   // -------- socket --------
-  const socket = io('/inbox');
+  // websocket-only — see inbox.js: a polling handshake + upgrade can land
+  // on different gunicorn workers and engineio rejects the sid.
+  const socket = io('/inbox', { transports: ['websocket'] });
 
   socket.on('driver_position_update', (data) => {
     upsertMarker(data);

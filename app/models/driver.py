@@ -7,14 +7,18 @@ DRIVER_CATEGORIES = ("economy", "business", "premium")
 DISCIPLINE_STATUSES = ("active", "warned", "suspended", "banned")
 APPROVAL_STATUSES = ("pending", "approved", "rejected")
 
-# The vehicle-type buckets exposed on the customer app's home cards.
-# "private" is the default (regular ملاكي car — auto-broadcast). The
-# other three are admin-dispatch only: the customer's ride lands as
-# a service_request AdminAlert and an admin manually assigns a driver
-# whose service_kind matches.
-SERVICE_KINDS = ("private", "suzuki", "delivery", "vip")
+# The vehicle-type buckets. Only "private" and "intercity" are offered to
+# customers now; suzuki/delivery/vip stay in the tuple because live driver
+# and ride rows still carry those values and dropping them would break the
+# admin filters and historical trip pages.
+#
+# private   — regular ملاكي car inside Benha, auto-broadcast to nearest captains
+# intercity — travel outside Benha. Never auto-matched: the request lands on
+#             the /intercity admin board and someone calls the customer back.
+SERVICE_KINDS = ("private", "intercity", "suzuki", "delivery", "vip")
 SERVICE_KIND_LABELS_AR = {
-    "private": "ملاكي",
+    "private": "ملاكي داخل بنها",
+    "intercity": "سفر خارج بنها",
     "suzuki": "سوزوكي",
     "delivery": "دليفري موتوسيكل",
     "vip": "VIP",
@@ -62,6 +66,10 @@ class Driver(db.Model):
     approved_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"))
     approved_at = db.Column(db.DateTime)
     signup_source = db.Column(db.String(20), default="admin", nullable=False)  # admin / public
+
+    # Set when the captain proved ownership of the number via reverse OTP
+    # (currently only exercised by the forgot-password flow).
+    phone_verified_at = db.Column(db.DateTime)
 
     # Firebase Cloud Messaging token — captain app registers it on login so
     # trip offers can push through when the app is in the background.

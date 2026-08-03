@@ -17,6 +17,7 @@ Endpoints:
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
@@ -31,12 +32,16 @@ from app import db
 from app.extensions import get_redis
 from app.models.customer import Customer
 from app.models.driver import Driver
+from app.models.intercity_request import IntercityRequest
 from app.models.ride import Ride
 from app.models.zone import Zone
 from app.services import pricing as pricing_svc
 from app.services import ride_lifecycle
 from app.services import matching
 from app.services import settings as _settings_svc
+from app.services import wa_verify
+from app.services import wallet as _wallet_svc
+from app.services.rate_limit import check_verify_start_limit
 
 
 rides_api_bp = Blueprint("rides_api", __name__, url_prefix="/api/v1")
@@ -192,7 +197,11 @@ def driver_earnings():
             )
             .with_entities(
                 func.count(Ride.id),
-                func.sum(Ride.price_egp),
+                func.sum(
+                    Ride.price_egp
+                    + func.coalesce(Ride.no_show_fee_egp, 0)
+                    + func.coalesce(Ride.captain_extra_egp, 0)
+                ),
                 func.sum(Ride.commission_egp),
             )
             .first()
@@ -228,9 +237,10 @@ def driver_earnings():
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
             "pickup_address": r.pickup_address,
             "dropoff_address": r.dropoff_address,
-            "gross_egp": float(r.price_egp or 0),
+            "gross_egp": float(r.total_egp),
+            "captain_extra_egp": float(r.captain_extra_egp or 0),
             "commission_egp": float(r.commission_egp or 0),
-            "net_egp": round(float(r.price_egp or 0) - float(r.commission_egp or 0), 2),
+            "net_egp": float(r.net_egp),
             "was_cash": True,  # every ride is cash for now
         }
         for r in today_trips_rows
@@ -246,9 +256,33 @@ def driver_earnings():
             # actually gets deducted (admin can tune it live via /pricing).
             "commission_rate": float(_settings_svc.get_pricing()["commission_rate"]),
             "today_trips": today_trips,
-            "cash_owed_egp": today_bucket["commission_egp"],
+            # Total unpaid commission from the ledger, not just today's — this
+            # is the number the captain actually has to hand over, and the one
+            # the debt gate blocks on.
+            "cash_owed_egp": float(_wallet_svc.driver_owed(did)),
+            "wallet_balance_egp": float(_wallet_svc.driver_balance(did)),
+            "max_debt_egp": float(current_app.config.get("CAPTAIN_MAX_DEBT_EGP", 300)),
         }
     )
+
+
+@rides_api_bp.get("/driver/wallet")
+@jwt_required()
+def driver_wallet():
+    """Captain's ledger — signed balance, what he owes, recent movements."""
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    blocked, owed, cap = _wallet_svc.driver_debt_block(did)
+    return jsonify({
+        "balance_egp": float(_wallet_svc.driver_balance(did)),
+        "owed_egp": float(owed),
+        "max_debt_egp": float(cap),
+        "blocked": blocked,
+        "transactions": [
+            t.to_dict() for t in _wallet_svc.driver_recent_transactions(did)
+        ],
+    })
 
 
 @rides_api_bp.get("/driver/discipline")
@@ -309,6 +343,18 @@ def driver_availability():
     resolved_zone_dict = None
 
     if action == "online":
+        from app.services import wallet as wallet_svc
+        blocked, owed, cap = wallet_svc.driver_debt_block(did)
+        if blocked:
+            return jsonify({
+                "error": "debt_limit_reached",
+                "owed_egp": float(owed),
+                "max_debt_egp": float(cap),
+                "message_ar": (
+                    f"عليك {float(owed):.0f} ج.م عمولة. سدد الاول عشان تشتغل تاني."
+                ),
+            }), 403
+
         zone_id_raw = data.get("zone_id")
         lat_raw = data.get("lat") or data.get("latitude")
         lng_raw = data.get("lng") or data.get("longitude")
@@ -432,6 +478,28 @@ def customer_rides():
     return jsonify([r.to_dict() for r in rides])
 
 
+@rides_api_bp.get("/customer/active-ride")
+@jwt_required()
+def customer_active_ride():
+    """The customer's current live ride, or null.
+
+    Lets the app resync after a resume without already holding a ride id —
+    a backgrounded app whose socket died has no other way back to the truth.
+    """
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    ride = (
+        Ride.query.filter(
+            Ride.customer_id == cid,
+            Ride.status.in_(("new", "broadcasting", "assigned", "started")),
+        )
+        .order_by(Ride.created_at.desc())
+        .first()
+    )
+    return jsonify({"ride": ride.to_dict() if ride else None})
+
+
 @rides_api_bp.post("/rides/<int:ride_id>/rate")
 @jwt_required()
 def rides_rate(ride_id: int):
@@ -522,17 +590,101 @@ def _customer_payload(customer, *, needs_password_setup=False):
     }
 
 
+@rides_api_bp.post("/verify/start")
+def verify_start():
+    """Mint a reverse-OTP code and return the wa.me deeplink for the app."""
+    data = request.json or {}
+    wa_id = wa_verify.normalize_wa_id(data.get("wa_id") or "")
+    purpose = (data.get("purpose") or "").strip()
+
+    if not wa_id:
+        return jsonify({"error": "wa_id required"}), 400
+    if purpose not in wa_verify.PURPOSES:
+        return jsonify({"error": "invalid_purpose"}), 400
+    if not current_app.config.get("WHATSAPP_BUSINESS_NUMBER"):
+        return jsonify({"error": "verification_unavailable"}), 503
+    if not check_verify_start_limit(wa_id):
+        return jsonify({"error": "too_many_requests"}), 429
+
+    if purpose == "customer_register":
+        existing = Customer.query.filter_by(wa_id=wa_id).first()
+        if existing is not None and existing.deleted_at is not None:
+            return jsonify({"error": "account_deleted"}), 403
+        if existing is not None and existing.password_hash:
+            return jsonify({"error": "phone_already_registered"}), 409
+    elif purpose == "customer_reset":
+        existing = Customer.query.filter_by(wa_id=wa_id).first()
+        if existing is None or existing.deleted_at is not None:
+            return jsonify({"error": "not_registered"}), 404
+    elif purpose == "driver_reset":
+        driver = Driver.query.filter_by(wa_id=wa_id).first()
+        if driver is None or driver.deleted_at is not None:
+            return jsonify({"error": "not_registered"}), 404
+
+    result = wa_verify.start(wa_id, purpose)
+    return jsonify(result)
+
+
+@rides_api_bp.get("/verify/status")
+def verify_status():
+    request_id = (request.args.get("request_id") or "").strip()
+    if not request_id:
+        return jsonify({"error": "request_id required"}), 400
+    return jsonify(wa_verify.status(request_id))
+
+
+@rides_api_bp.post("/customer/reset-password")
+def customer_reset_password():
+    data = request.json or {}
+    wa_id = wa_verify.normalize_wa_id(data.get("wa_id") or "")
+    ticket = (data.get("ticket") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not wa_id or not ticket or not password:
+        return jsonify({"error": "wa_id, ticket, password required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
+    if not wa_verify.consume_ticket(ticket, wa_id, "customer_reset"):
+        return jsonify({"error": "invalid_ticket"}), 403
+
+    customer = Customer.query.filter_by(wa_id=wa_id).first()
+    if customer is None or customer.deleted_at is not None:
+        return jsonify({"error": "not_registered"}), 404
+
+    customer.set_password(password)
+    customer.phone_verified_at = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({
+        "access_token": _issue_customer_token(customer),
+        "refresh_token": _issue_customer_refresh_token(customer),
+        "customer": _customer_payload(customer),
+    })
+
+
 @rides_api_bp.post("/customer/register")
 def customer_register():
     data = request.json or {}
     wa_id = (data.get("wa_id") or "").strip().lstrip("+")
     name = (data.get("name") or "").strip() or None
     password = (data.get("password") or "").strip()
+    ticket = (data.get("verification_ticket") or "").strip()
 
     if not wa_id or not name or not password:
         return jsonify({"error": "wa_id, name, password required"}), 400
     if len(password) < 6:
         return jsonify({"error": "password must be at least 6 characters"}), 400
+
+    # The ticket is optional until REQUIRE_PHONE_VERIFICATION is flipped on,
+    # so app builds shipped before this deploy keep working. It's always
+    # honoured when present.
+    verified_at = None
+    if ticket:
+        if not wa_verify.consume_ticket(ticket, wa_id, "customer_register"):
+            return jsonify({"error": "invalid_ticket"}), 403
+        verified_at = datetime.utcnow()
+    elif current_app.config.get("REQUIRE_PHONE_VERIFICATION"):
+        return jsonify({"error": "verification_required"}), 403
 
     existing = Customer.query.filter_by(wa_id=wa_id).first()
     if existing is not None:
@@ -542,6 +694,7 @@ def customer_register():
 
     customer = Customer(wa_id=wa_id, name=name)
     customer.set_password(password)
+    customer.phone_verified_at = verified_at
     db.session.add(customer)
     db.session.commit()
 
@@ -700,7 +853,7 @@ def rides_quote():
             )
         except (TypeError, ValueError):
             return jsonify({"error": "coords must be numbers"}), 400
-        return jsonify(q.to_dict())
+        return jsonify(_quote_payload(cid, q))
 
     try:
         from_zone_id = int(data.get("from_zone_id"))
@@ -710,7 +863,26 @@ def rides_quote():
     q = pricing_svc.quote(cid, from_zone_id, to_zone_id)
     if q is None:
         return jsonify({"error": "no_pricing_for_pair"}), 404
-    return jsonify(q.to_dict())
+    return jsonify(_quote_payload(cid, q))
+
+
+def _quote_payload(customer_id: int, q) -> dict:
+    """Quote plus the credit that will come off the cash at completion.
+
+    Rides settle in cash, so the customer needs to see the credit before
+    confirming — otherwise the amount the captain asks for looks wrong.
+    """
+    from app.services import wallet as wallet_svc
+
+    payload = q.to_dict()
+    try:
+        balance = float(wallet_svc.get_balance(customer_id))
+    except Exception:  # noqa: BLE001
+        balance = 0.0
+    payload["wallet_balance_egp"] = balance
+    payload["wallet_discount_egp"] = min(balance, payload["total_egp"])
+    payload["cash_due_egp"] = max(payload["total_egp"] - balance, 0.0)
+    return payload
 
 
 # ---------- create ----------
@@ -1356,7 +1528,12 @@ def rides_no_show(ride_id: int):
 @rides_api_bp.get("/customer/wallet")
 @jwt_required()
 def customer_wallet_get():
-    """Balance + recent transactions for the logged-in customer."""
+    """Balance + recent transactions for the logged-in customer.
+
+    There is no top-up — every ride is cash. Balance only ever arrives as a
+    refund or an admin credit, and it comes off the cash due on the next
+    completed ride.
+    """
     cid = _customer_id_from_jwt()
     if cid is None:
         return jsonify({"error": "customer_token_required"}), 403
@@ -1369,20 +1546,6 @@ def customer_wallet_get():
     })
 
 
-@rides_api_bp.post("/customer/wallet/topup")
-@jwt_required()
-def customer_wallet_topup():
-    """Stub. Real payment integration lands later. Returns 501 with a
-    clear message so the Flutter UI can render a 'coming soon' toast."""
-    cid = _customer_id_from_jwt()
-    if cid is None:
-        return jsonify({"error": "customer_token_required"}), 403
-    return jsonify({
-        "error": "topup_not_available_yet",
-        "message": "الشحن هيكون متاح قريباً",
-    }), 501
-
-
 # ---------- Captain end-of-trip extra charge ----------
 
 @rides_api_bp.post("/rides/<int:ride_id>/captain-extra")
@@ -1390,9 +1553,10 @@ def customer_wallet_topup():
 def rides_captain_extra(ride_id: int):
     """Captain adds a surcharge (5-100 EGP by default) at the end of the trip.
 
-    Tries the customer's wallet first; falls back to a `CustomerPendingFee`
-    when the balance is insufficient. Either path stores the amount on the
-    ride so the customer app can render a receipt breakdown.
+    Rides settle in cash, so this just raises what the customer hands over —
+    it must never also touch the wallet or book a pending fee, or the
+    customer would pay the same surcharge twice. The platform takes its
+    normal commission on the extra.
     """
     did = _driver_id_from_jwt()
     if did is None:
@@ -1422,49 +1586,57 @@ def rides_captain_extra(ride_id: int):
         return jsonify({"error": "already_charged"}), 409
 
     from decimal import Decimal
-    from app.services import wallet as wallet_svc
-    from app.models.ride import CustomerPendingFee
+    from app.services.pricing import _commission_rate
 
-    method = None
-    txn = wallet_svc.try_debit(
-        ride.customer_id, amount,
-        reason="captain_extra", ride_id=ride.id,
-        note=f"إضافة الكابتن — رحلة #{ride.id}",
-    )
-    if txn is not None:
-        method = "wallet"
-    else:
-        # Wallet was short — book it as a pending fee for the next trip so
-        # the customer still pays, no captain lost.
-        db.session.add(CustomerPendingFee(
-            customer_id=ride.customer_id,
-            reason="captain_extra",
-            amount_egp=Decimal(str(amount)),
-            from_ride_id=ride.id,
-        ))
-        method = "pending_fee"
+    extra = Decimal(str(amount))
+    ride.captain_extra_egp = extra
+    # The platform earns on the surcharge at the same rate as the fare,
+    # otherwise a captain could move fare into "extra" to dodge commission.
+    extra_commission = (extra * Decimal(str(_commission_rate()))).quantize(Decimal("0.01"))
+    ride.commission_egp = Decimal(str(ride.commission_egp or 0)) + extra_commission
 
-    ride.captain_extra_egp = Decimal(str(amount))
+    # A completed ride already had its commission posted to the captain's
+    # ledger, so only the delta goes on now. An in-flight ride gets the whole
+    # amount at completion, so posting here would double it.
+    if ride.status == "completed":
+        from app.services import wallet as wallet_svc
+        wallet_svc.post_ride_settlement(ride, extra_commission_egp=extra_commission)
+
     db.session.commit()
+
+    # Live update for a customer who still has the trip screen open — the
+    # push below only covers the backgrounded case.
+    try:
+        from app import socketio
+        socketio.emit(
+            "ride_totals_updated",
+            {"ride_id": ride.id, "ride": ride.to_dict()},
+            namespace="/customer",
+            room=f"customer:{ride.customer_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("captain-extra socket emit failed: %s", e)
 
     # Best-effort notify.
     from app.services import push_notifications as push
     push.send_to_customer(
         ride.customer_id,
-        title="💰 إضافة على رحلتك",
+        title="إضافة على رحلتك",
         body=(
-            f"الكابتن ضاف {amount:.0f} ج.م على رحلتك."
-            + (" اتخصمت من محفظتك." if method == "wallet"
-               else " هتتحسب على أول رحلة جاية.")
+            f"الكابتن ضاف {amount:.0f} ج.م على رحلتك. "
+            f"الاجمالي بقى {float(ride.total_egp):.0f} ج.م."
         ),
         data={"kind": "captain_extra_added", "ride_id": ride.id,
-              "amount_egp": str(amount), "method": method},
+              "amount_egp": str(amount),
+              "total_egp": str(float(ride.total_egp))},
         collapse_key=f"ride:{ride.id}",
     )
 
     return jsonify({
-        "ok": True, "method": method,
+        "ok": True,
         "amount_egp": amount,
+        "total_egp": float(ride.total_egp),
+        "net_egp": float(ride.net_egp),
         "ride": ride.to_dict(include_customer_contact=True),
     })
 
@@ -1567,3 +1739,38 @@ def rides_arrived_set_destination(ride_id: int):
         "distance_km": q.distance_km,
         "ride": ride.to_dict(include_customer_contact=True),
     })
+
+
+@rides_api_bp.post("/intercity/request")
+@jwt_required()
+def intercity_request():
+    """File a "سفر خارج بنها" enquiry from the app's intercity card.
+
+    Lands on the same /intercity admin board as the WhatsApp branch. No
+    ride is created — an admin phones the customer back to quote.
+    """
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+
+    customer = db.session.get(Customer, cid)
+    if customer is None:
+        return jsonify({"error": "customer_not_found"}), 404
+
+    data = request.json or {}
+    origin = (data.get("origin") or "").strip()
+    destination = (data.get("destination") or "").strip()
+    notes = (data.get("notes") or "").strip()
+    if not origin or not destination:
+        return jsonify({"error": "origin_and_destination_required"}), 400
+
+    raw = f"من: {origin}\nإلى: {destination}"
+    if notes:
+        raw += f"\nملاحظات: {notes}"
+
+    req = IntercityRequest(
+        customer_id=cid, wa_id=customer.wa_id, raw_text=raw[:2000], source="app",
+    )
+    db.session.add(req)
+    db.session.commit()
+    return jsonify({"ok": True, "request": req.to_dict()}), 201

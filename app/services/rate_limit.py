@@ -45,3 +45,30 @@ def check_gemini_limit(wa_id: str) -> tuple[bool, int]:
         return True, 0
 
     return count <= limit, count
+
+
+def _window_check(prefix: str, wa_id: str, limit: int, window: int) -> bool:
+    """Generic fixed-window bucket. Fails open if Redis is unavailable."""
+    import time
+
+    bucket = int(time.time()) // window
+    key = f"{prefix}:{wa_id}:{bucket}"
+    try:
+        r = get_redis(current_app.config.get("REDIS_URL"))
+        count = int(r.incr(key))
+        if count == 1:
+            r.expire(key, window + 60)
+    except Exception:  # noqa: BLE001
+        current_app.logger.warning("%s rate-limit redis unavailable — fail-open", prefix)
+        return True
+    return count <= limit
+
+
+def check_verify_start_limit(wa_id: str) -> bool:
+    """Cap how often one phone can mint a verification code (3 per 10 min)."""
+    return _window_check("vrl_start", wa_id, 3, 600)
+
+
+def check_verify_attempt_limit(wa_id: str) -> bool:
+    """Cap inbound code-matching attempts from one phone (10 per 10 min)."""
+    return _window_check("vrl_try", wa_id, 10, 600)

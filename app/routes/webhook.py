@@ -9,6 +9,8 @@ from flask import Blueprint, request, current_app, abort
 from app.services import whatsapp
 from app.services.inbox import handle_incoming_message, handle_status_update
 from app.services import whatsapp_booking
+from app.services import wa_verify
+from app.services.rate_limit import check_verify_attempt_limit
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +61,16 @@ def receive():
                     log.exception("Failed to handle incoming message %s", msg.get("id"))
                     continue
 
+                # Reverse-OTP check runs before anything else. A verification
+                # message must never reach the booking pipeline or trigger
+                # the service menu. Keyed on msg["from"] rather than the
+                # persisted conversation's customer, so a captain resetting
+                # their password works too.
+                if msg.get("type") == "text":
+                    body = (msg.get("text") or {}).get("body") or ""
+                    if _handle_verification(msg.get("from") or "", body):
+                        continue
+
                 # Route customer text + location messages through the AI
                 # booking pipeline. Drivers use the app directly, so their
                 # inbound messages stay in the human agent inbox only.
@@ -101,6 +113,31 @@ def receive():
 
     # Always 200 — otherwise Meta will retry aggressively
     return "", 200
+
+
+def _handle_verification(sender_wa_id: str, body: str) -> bool:
+    """Try to consume this message as a reverse-OTP proof.
+
+    Returns True when the message was a verification message (matched or
+    not) so the caller stops processing it — a stray "تفعيل 111111" must
+    not fall through to Gemini as a booking request.
+    """
+    if not sender_wa_id or wa_verify.KEYWORD not in (body or ""):
+        return False
+    if not check_verify_attempt_limit(sender_wa_id):
+        return True
+    try:
+        purpose = wa_verify.resolve_inbound(sender_wa_id, body)
+    except Exception:
+        log.exception("reverse-OTP resolve failed for %s", sender_wa_id)
+        return True
+    if not purpose:
+        return True
+    try:
+        whatsapp.send_text(sender_wa_id, wa_verify.CONFIRM_TEXT)
+    except Exception:
+        log.warning("reverse-OTP confirmation send failed for %s", sender_wa_id)
+    return True
 
 
 def _interactive_reply_id(msg: dict) -> str | None:

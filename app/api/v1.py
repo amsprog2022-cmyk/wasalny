@@ -79,6 +79,46 @@ def driver_login():
     )
 
 
+@api_v1_bp.route("/driver/reset-password", methods=["POST"])
+def driver_reset_password():
+    """Self-service captain password reset, gated on a reverse-OTP ticket.
+
+    Admin manual reset stays available as a fallback for captains who
+    changed their number.
+    """
+    from datetime import datetime
+    from app.services import wa_verify
+
+    data = request.json or {}
+    wa_id = wa_verify.normalize_wa_id(data.get("wa_id") or "")
+    ticket = (data.get("ticket") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not wa_id or not ticket or not password:
+        return jsonify({"error": "wa_id, ticket, password required"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
+    if not wa_verify.consume_ticket(ticket, wa_id, "driver_reset"):
+        return jsonify({"error": "invalid_ticket"}), 403
+
+    driver = Driver.query.filter_by(wa_id=wa_id).first()
+    if not driver or driver.deleted_at is not None:
+        return jsonify({"error": "not_found"}), 404
+
+    driver.set_password(password)
+    driver.must_change_password = False
+    driver.phone_verified_at = datetime.utcnow()
+    db.session.commit()
+
+    claims = {"kind": "driver"}
+    return jsonify({
+        "access_token": create_access_token(identity=f"driver:{driver.id}", additional_claims=claims),
+        "refresh_token": create_refresh_token(identity=f"driver:{driver.id}", additional_claims=claims),
+        "driver": driver.to_dict(),
+        "must_change_password": False,
+    })
+
+
 @api_v1_bp.route("/auth/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh():

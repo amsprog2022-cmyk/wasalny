@@ -11,6 +11,8 @@ env/
 secrets/
 *.p8
 firebase-service-account*.json
+google-services.json
+GoogleService-Info.plist
 *.db
 *.sqlite
 *.sqlite3

@@ -53,6 +53,8 @@ def create_app(config_class=Config):
     from app.routes.legal import legal_bp
     from app.routes.complaints import complaints_bp
     from app.routes.sos import sos_bp
+    from app.routes.intercity import intercity_bp
+    from app.routes.wallets import wallets_bp
     from app.routes.reports import reports_bp
     from app.routes.marketing import marketing_bp
     from app.routes.audit import audit_bp
@@ -76,6 +78,8 @@ def create_app(config_class=Config):
     app.register_blueprint(legal_bp)
     app.register_blueprint(complaints_bp)
     app.register_blueprint(sos_bp)
+    app.register_blueprint(intercity_bp)
+    app.register_blueprint(wallets_bp)
     app.register_blueprint(reports_bp)
     app.register_blueprint(marketing_bp)
     app.register_blueprint(audit_bp)
@@ -96,6 +100,7 @@ def create_app(config_class=Config):
     from app.models import gemini_call as _gc  # noqa: F401
     from app.models import trip_chat as _tc    # noqa: F401
     from app.models import wallet as _wl       # noqa: F401
+    from app.models import intercity_request as _ic  # noqa: F401
 
     with app.app_context():
         db.create_all()
@@ -394,10 +399,45 @@ def _apply_lightweight_migrations(app):
                     "ALTER TABLE rides ADD COLUMN captain_extra_egp "
                     "NUMERIC(8,2) DEFAULT 0 NOT NULL"
                 ))
-    # customer_wallets + wallet_transactions are new tables — db.create_all()
+
+        # Reverse-OTP phone verification. Nullable everywhere — existing
+        # accounts predate verification and must not be locked out.
+        for table in ("customers", "drivers"):
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                    "phone_verified_at TIMESTAMP"
+                ))
+            elif dialect == "sqlite":
+                existing = {row[1] for row in conn.execute(
+                    text(f"PRAGMA table_info({table})")
+                ).fetchall()}
+                if "phone_verified_at" not in existing:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN phone_verified_at DATETIME"
+                    ))
+
+        # How much wallet credit came off the cash the customer hands over.
+        # 0 on every historical ride, which is correct — the wallet was
+        # never spendable before.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS wallet_discount_egp "
+                "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "wallet_discount_egp" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN wallet_discount_egp "
+                    "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+                ))
+    # The wallet tables (customer + driver) are new tables — db.create_all()
     # handles them automatically; no ALTER needed. Print here so we can see it
     # ran on every boot.
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet ensured")
 
 
 def _init_sentry(app):

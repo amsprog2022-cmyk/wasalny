@@ -165,6 +165,7 @@ def _build_prompt(
   - لا تذكر سعر محدد بالجنيه إلا لو السعر موجود في معلومات الرحلة النشطة أعلاه.
   - لا تعد بوقت وصول محدد بالدقايق؛ قل "الكابتن هيتواصل معاك في أقرب وقت".
   - ابدأ بإيموجي مناسب (🌟 🚗 🙂 ✅ ⚠️).
+  - ممنوع نهائيًا استخدام علامة التعجب (!) في أي رد. استخدم النقطة بدلًا منها.
   - لـ ride_status: اذكر حالة الرحلة الحالية بوضوح واسم الكابتن لو متاح.
   - لـ cancel_ride: أكد للعميل إن الطلب اتسجل وسنلغي الرحلة.
   - لـ complaint: اعتذر بأدب وأكد إن الشكوى راحت للإدارة.
@@ -179,6 +180,20 @@ def _build_prompt(
   "reply_ar": "<نص الرد لو intent مش book_ride>",
   "complaint_summary": "<ملخص الشكوى بالعربي لو intent = complaint>"}}
 """
+
+
+def _strip_exclamations(text: str) -> str:
+    """Enforce the no-"!" house style on anything Gemini writes.
+
+    The prompt asks for it too, but a prompt is a request and this is a
+    guarantee. Collapses "!!!" and a "!" already followed by punctuation
+    so we never emit a stray ".." or a dangling space before a newline.
+    """
+    if not text:
+        return text
+    text = re.sub(r"[ \t]*[!！]+(?=\s*[.،,؟?])", "", text)
+    text = re.sub(r"[ \t]*[!！]+", ".", text)
+    return re.sub(r"[ \t]+(?=\n|$)", "", text)
 
 
 def _extract_json(text: str) -> dict | None:
@@ -283,7 +298,7 @@ def parse_message(
             pickup_text=(parsed.get("pickup_text") or None),
             dropoff_text=(parsed.get("dropoff_text") or None),
             confidence=float(parsed.get("confidence") or 0.0),
-            reply_ar=str(parsed.get("reply_ar") or ""),
+            reply_ar=_strip_exclamations(str(parsed.get("reply_ar") or "")),
             raw_response=raw,
             complaint_summary=parsed.get("complaint_summary") or None,
         )

@@ -81,10 +81,14 @@ class Config:
     SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
     # Captain end-of-trip extra charge (waiting time / detour / etc.).
-    # Captain enters an amount in this range; deducts from customer wallet
-    # or falls back to CustomerPendingFee when the wallet is short.
+    # Rides are cash, so this simply raises what the customer hands over.
     CAPTAIN_EXTRA_MIN_EGP = float(os.getenv("CAPTAIN_EXTRA_MIN_EGP", "5"))
     CAPTAIN_EXTRA_MAX_EGP = float(os.getenv("CAPTAIN_EXTRA_MAX_EGP", "100"))
+
+    # Unpaid commission a captain may carry before he is blocked from going
+    # online. Rides settle in cash, so this debt is the only lever we have to
+    # make him come in and hand the money over.
+    CAPTAIN_MAX_DEBT_EGP = float(os.getenv("CAPTAIN_MAX_DEBT_EGP", "300"))
 
     # AI parser — gemini-2.0-flash was retired mid-2026, so we default to
     # the -latest alias which always follows Google's current fast model.
@@ -108,6 +112,17 @@ class Config:
     WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
     # Escape hatch for debugging bad secrets — do not use in production.
     WHATSAPP_SKIP_SIGNATURE_CHECK = os.getenv("WHATSAPP_SKIP_SIGNATURE_CHECK", "")
+
+    # Reverse OTP. The customer sends a prefilled code FROM their WhatsApp TO
+    # this number, so it must be the dialable business line in international
+    # format (e.g. 201012345678) — NOT WHATSAPP_PHONE_NUMBER_ID, which is
+    # Meta's internal id and cannot be used in a wa.me link.
+    WHATSAPP_BUSINESS_NUMBER = os.getenv("WHATSAPP_BUSINESS_NUMBER", "")
+    # Off by default so already-installed app builds keep registering after
+    # this deploys. Flip to "1" on Railway once the new builds are adopted.
+    REQUIRE_PHONE_VERIFICATION = os.getenv("REQUIRE_PHONE_VERIFICATION", "") == "1"
+    VERIFY_CODE_TTL_SECONDS = int(os.getenv("VERIFY_CODE_TTL_SECONDS", "600"))
+    VERIFY_TICKET_TTL_SECONDS = int(os.getenv("VERIFY_TICKET_TTL_SECONDS", "900"))
 
     # Initial admin bootstrap
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@wassalny.com")

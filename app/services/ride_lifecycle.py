@@ -256,7 +256,7 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     car_plate = (driver.car_plate if driver else "") or ""
     push.send_to_customer(
         ride.customer_id,
-        title="🚗 كابتن جاي!",
+        title="🚗 كابتن جاي",
         body=f"{driver_name} · {car_plate}" if car_plate else driver_name,
         data={"kind": "trip_assigned", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
@@ -302,8 +302,8 @@ def arrived(ride: Ride, actor_driver_id: int) -> None:
     car_plate = (driver.car_plate if driver else "") or ""
     push.send_to_customer(
         ride.customer_id,
-        title="🚗 الكابتن وصل!",
-        body=f"{driver_name} · {car_plate} — انزل ياكابتن" if car_plate else f"{driver_name} — الكابتن مستنيك",
+        title="🚗 الكابتن وصل اتفضل انزل",
+        body=f"{driver_name} · {car_plate}" if car_plate else driver_name,
         data={"kind": "captain_arrived", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
     )
@@ -313,7 +313,7 @@ def arrived(ride: Ride, actor_driver_id: int) -> None:
         try:
             from app.services import whatsapp as _wa
             plate_part = f" · {car_plate}" if car_plate else ""
-            body = f"🚗 الكابتن وصل! {driver_name}{plate_part} — انزل ياكابتن."
+            body = f"🚗 الكابتن وصل اتفضل انزل.\n{driver_name}{plate_part}"
             _wa.send_text(ride.customer.wa_id, body)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("WhatsApp captain-arrived notify failed: %s", e)
@@ -333,7 +333,7 @@ def start(ride: Ride, actor_driver_id: int) -> None:
     push.send_to_customer(
         ride.customer_id,
         title="🚦 الرحلة ابتدت",
-        body="رحلة سعيدة!",
+        body="رحلة سعيدة",
         data={"kind": "trip_started", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
     )
@@ -362,6 +362,14 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
     if driver is not None:
         driver.total_trips = (driver.total_trips or 0) + 1
 
+    # Money, all inside the same transaction as the status change so a
+    # completed ride can never exist without its ledger entries: spend any
+    # customer credit first (it lowers the cash due), then book what the
+    # captain owes us on what he actually collected.
+    from app.services import wallet as wallet_svc
+    wallet_svc.apply_ride_credit(ride)
+    wallet_svc.post_ride_settlement(ride)
+
     db.session.commit()
     _emit_customer(ride, "trip_status_changed")
     _emit_driver(actor_driver_id, "trip_completed_ack", {"ride": ride.to_dict()})
@@ -369,7 +377,7 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
     push.send_to_customer(
         ride.customer_id,
         title="✅ وصلت بأمان",
-        body=f"قيّم رحلتك — {float(ride.price_egp):.0f} ج.م",
+        body=f"قيّم رحلتك — {float(ride.cash_due_egp):.0f} ج.م",
         data={"kind": "trip_completed", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
     )

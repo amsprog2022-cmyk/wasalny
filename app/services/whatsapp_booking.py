@@ -34,6 +34,7 @@ from app.models.ai_session import AiSession, AdminAlert
 from app.models.conversation import Conversation
 from app.models.customer import Customer
 from app.models.gemini_call import GeminiCallLog
+from app.models.intercity_request import IntercityRequest
 from app.models.message import Message
 from app.models.ride import Ride
 from app.services import ai_parser
@@ -330,7 +331,7 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
         # Proactive "we're searching" message — matches the plan-approved UX
         # decision so the customer isn't left in silence for 2-3 min.
         ack = (
-            f"🚗 تمام! بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
+            f"🚗 تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
             + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address
                else ".\nالكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.")
         )
@@ -339,7 +340,7 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     else:
         dest = ride.dropoff_address or session.partial_dropoff_text
         ack = (
-            f"✅ تمام! طلب {wa_menu.label_ar(kind)} اتسجل.\n"
+            f"✅ تمام. طلب {wa_menu.label_ar(kind)} اتسجل.\n"
             f"من: {ride.pickup_address or 'مكانك'}\n"
             f"إلى: {dest}\n\n"
             "طلبك راح للإدارة دلوقتي وهنبعتلك كابتن ونبلغك بسعره في أقرب وقت. "
@@ -378,16 +379,44 @@ def _apply_service_choice(
     session.clarify_count = 0
     db.session.commit()
 
+    # Travel outside Benha never becomes a ride — no pin, no price, no
+    # captain. All we need is the customer's own wording for the admin who
+    # calls back, so ask one open question and stop here.
+    if kind == "intercity":
+        _try_send(customer.wa_id, "منين لفين؟", customer=customer)
+        return {"handled": True, "action": "intercity_asked"}
+
     booked = _try_book_ride(customer, session)
     if booked:
         return booked
 
+    # Reassure at the moment of choice rather than only after the pin
+    # arrives — otherwise the pickup question sits there feeling ignored.
+    _try_send_sticker(customer.wa_id, "booked", customer=customer)
     _try_send(
         customer.wa_id,
-        f"✅ اخترت {wa_menu.label_ar(kind)}.\n\n{_next_question(session)}",
+        f"بنشوف اقرب كابتن لحضرتك.\n\n{_next_question(session)}",
         customer=customer,
     )
     return {"handled": True, "action": "service_chosen", "service_kind": kind}
+
+
+def _file_intercity_request(customer: Customer, session: AiSession, text: str) -> dict:
+    """Park a "سفر خارج بنها" enquiry on the admin board.
+
+    Stored verbatim: Gemini never sees this branch because the admin needs
+    the customer's own phrasing to quote a price over the phone.
+    """
+    db.session.add(IntercityRequest(
+        customer_id=customer.id,
+        wa_id=customer.wa_id,
+        raw_text=text,
+        source="whatsapp",
+    ))
+    session.status = "completed"
+    db.session.commit()
+    _try_send(customer.wa_id, "حد من الادارة هيتواصل مع حضرتك.", customer=customer)
+    return {"handled": True, "action": "intercity_filed"}
 
 
 def _apply_pickup_from_pin(session: AiSession, lat: float, lng: float) -> None:
@@ -478,7 +507,7 @@ def process_incoming(customer: Customer, payload) -> dict:
         try:
             ride = db.session.get(Ride, active_ride["id"])
             ride_lifecycle.cancel(ride, actor="customer", reason="whatsapp_cancel")
-            _try_send(customer.wa_id, "✅ تمام، الرحلة اتلغت. سلامات!", customer=customer)
+            _try_send(customer.wa_id, "✅ تمام، الرحلة اتلغت. سلامات.", customer=customer)
             return {"handled": True, "action": "cancel_keyword"}
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("cancel keyword failed: %s", e)
@@ -490,6 +519,16 @@ def process_incoming(customer: Customer, payload) -> dict:
     # MENU TAP — the customer picked a service off the interactive list.
     if kind == "menu_choice":
         return _apply_service_choice(customer, session, chosen_kind)
+
+    # INTERCITY — the customer already answered "منين لفين؟". Whatever they
+    # typed is the request, so it goes straight to the admin board without
+    # ever reaching Gemini or the ride pipeline. A pin here is useless to
+    # the admin (there's no route to price), so we re-ask instead.
+    if session.service_kind == "intercity":
+        if kind == "text":
+            return _file_intercity_request(customer, session, message_body)
+        _try_send(customer.wa_id, "منين لفين؟ اكتبهالي.", customer=customer)
+        return {"handled": True, "action": "intercity_reask"}
 
     # SERVICE GATE — every conversation starts by picking one of the four
     # services. Until that's on the session we don't call Gemini at all;
@@ -588,7 +627,7 @@ def process_incoming(customer: Customer, payload) -> dict:
         try:
             ride = db.session.get(Ride, active_ride["id"])
             ride_lifecycle.cancel(ride, actor="customer", reason="whatsapp_cancel")
-            _try_send(customer.wa_id, result.reply_ar or "✅ اتلغت الرحلة. سلامات!", customer=customer)
+            _try_send(customer.wa_id, result.reply_ar or "✅ اتلغت الرحلة. سلامات.", customer=customer)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("cancel via whatsapp failed: %s", e)
             _open_handoff(customer, reason="cancel_failed",

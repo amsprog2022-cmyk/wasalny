@@ -83,6 +83,17 @@ class DriverNamespace(Namespace):
         if not zone_id:
             emit("driver:error", {"message": "zone_id required"})
             return
+        from app.services import wallet as wallet_svc
+        blocked, owed, cap = wallet_svc.driver_debt_block(driver_id)
+        if blocked:
+            emit("driver:debt_blocked", {
+                "owed_egp": float(owed),
+                "max_debt_egp": float(cap),
+                "message_ar": (
+                    f"عليك {float(owed):.0f} ج.م عمولة. سدد الاول عشان تشتغل تاني."
+                ),
+            })
+            return
         av.set_online(driver_id, zone_id)
         emit("driver:presence", av.get_presence(driver_id).__dict__)
         _broadcast_presence_to_admin(driver_id)

@@ -1,0 +1,79 @@
+{% extends "layout/base.html" %}
+{% block title %}سفر خارج بنها · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-5xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold">🛣️ سفر خارج بنها</h1>
+    <p class="text-text-muted text-sm">طلبات السفر بره بنها. الطلب دا مش رحلة — لازم حد من الادارة يكلم العميل.</p>
+  </div>
+
+  <section>
+    <h2 class="font-bold mb-3 text-primary">جديدة ({{ open_requests|length }})</h2>
+    {% if open_requests %}
+      <div class="space-y-4">
+        {% for r in open_requests %}
+          <div class="card">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <p class="text-lg font-bold">{{ r.customer.name if r.customer and r.customer.name else 'عميل' }}</p>
+                <p class="text-text-muted font-mono text-xs" dir="ltr">{{ r.wa_id }}</p>
+                <p class="text-text-muted text-xs">{{ r.created_at.strftime('%H:%M · %d %b') }} · {{ 'واتساب' if r.source == 'whatsapp' else 'التطبيق' }}</p>
+              </div>
+              <a href="tel:+{{ r.wa_id }}" class="btn-primary" style="padding: 6px 14px; font-size: 12px;">📞 كلم العميل</a>
+            </div>
+            {% if r.raw_text %}
+              <p class="text-white/80 text-sm mb-3">"{{ r.raw_text }}"</p>
+            {% endif %}
+            <div class="flex gap-2">
+              <form method="post" action="{{ url_for('intercity.contact', req_id=r.id) }}" class="inline flex gap-2 flex-1">
+                <input name="note" placeholder="ملاحظات" class="input flex-1" style="padding: 6px 14px;" />
+                <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">اتواصلت</button>
+              </form>
+              <form method="post" action="{{ url_for('intercity.close', req_id=r.id) }}" class="inline">
+                <button class="btn-primary" style="padding: 6px 14px; font-size: 12px;">اقفل</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="card text-center">
+        <p class="text-success">مفيش طلبات سفر جديدة.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2 class="font-bold mb-3 text-text-muted">القديمة</h2>
+    {% set status_ar = {'open':'جديدة','contacted':'اتواصلنا','closed':'اتقفلت'} %}
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">الرقم</th>
+            <th class="text-right px-4 py-3">الطلب</th>
+            <th class="text-right px-4 py-3">الحالة</th>
+            <th class="text-right px-4 py-3">مين</th>
+            <th class="text-right px-4 py-3">ملاحظات</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in past %}
+            <tr class="border-t border-white/5">
+              <td class="px-4 py-3 text-text-muted">{{ r.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ r.wa_id }}</td>
+              <td class="px-4 py-3">{{ (r.raw_text or '')[:60] }}</td>
+              <td class="px-4 py-3">{{ status_ar.get(r.status, r.status) }}</td>
+              <td class="px-4 py-3 text-text-muted">{{ r.handled_by.name if r.handled_by else '—' }}</td>
+              <td class="px-4 py-3 text-text-muted">{{ (r.note or '')[:60] }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="px-4 py-8 text-center text-text-muted">مفيش طلبات قديمة.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

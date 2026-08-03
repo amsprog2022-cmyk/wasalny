@@ -2,7 +2,7 @@
 
 Both the alert-driven assign flow (`app/routes/alerts.py assign`) and
 the admin-created ride flow (`app/routes/live_map.py create_ride`) send
-the same "🚗 لقينالك كابتن! ..." WhatsApp text with car + phone info.
+the same "🚗 كابتن ... جاي دلوقتي" WhatsApp text with car + phone info.
 This module centralises that so the two callers stay in sync.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ def notify_customer_of_assignment(customer: Customer, driver: Driver) -> bool:
         else f"+{driver.wa_id}" if driver.wa_id else ""
     )
     body_lines = [
-        f"🚗 لقينالك كابتن! ده {driver.name} جاي دلوقتي.",
+        f"🚗 كابتن {driver.name} جاي دلوقتي.",
     ]
     if car_line:
         body_lines.append(f"العربية: {car_line}")
