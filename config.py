@@ -77,6 +77,9 @@ class Config:
     FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "wasalny-de5bf")
 
+    # Sentry error tracking. Silent no-op when unset (local dev).
+    SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+
     # AI parser — gemini-2.0-flash was retired mid-2026, so we default to
     # the -latest alias which always follows Google's current fast model.
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

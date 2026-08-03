@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 import eventlet
@@ -457,5 +457,103 @@ def start_matching(ride_id: int, pending_fee_ids: list[int] | None = None) -> No
                 match_ride(ride_id, pending_fee_ids=pending_fee_ids)
             except Exception as e:
                 app.logger.exception("matching failed for ride %s: %s", ride_id, e)
+                _report_to_sentry(e, ride_id=ride_id, where="match_ride")
 
     eventlet.spawn_n(_worker)
+
+
+# ---------- Sentry ----------
+
+def _report_to_sentry(exc: BaseException, **tags) -> None:
+    """Best-effort Sentry capture. Silent no-op when the SDK isn't installed
+    or SENTRY_DSN isn't set."""
+    try:
+        import sentry_sdk
+        with sentry_sdk.push_scope() as scope:
+            for k, v in tags.items():
+                scope.set_tag(k, v)
+            sentry_sdk.capture_exception(exc)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------- stuck-broadcasting sweeper ----------
+
+STUCK_BROADCAST_AGE_SECONDS = 90
+SWEEPER_INTERVAL_SECONDS = 30
+SWEEPER_LOCK_KEY = "sweeper:matching:lock"
+
+
+def sweep_stuck_broadcasting() -> int:
+    """Cancel rides wedged in `broadcasting` because their matching greenlet
+    died (worker crash, deploy mid-round, etc.). Returns the count cancelled.
+
+    Safe to run from any worker — leader-elected via a Redis SETNX lock, and
+    each individual cancel is guarded by ride_lifecycle's own status check
+    so double-cancels raise ValueError (which we swallow).
+    """
+    r = _r()
+    # Only one worker sweeps per interval. TTL slightly under interval so
+    # we're never blocked across ticks even if a worker crashes mid-sweep.
+    if not r.set(SWEEPER_LOCK_KEY, "1", nx=True, ex=SWEEPER_INTERVAL_SECONDS - 5):
+        return 0
+
+    cutoff = datetime.utcnow() - timedelta(seconds=STUCK_BROADCAST_AGE_SECONDS)
+    stuck = (
+        Ride.query.filter(
+            Ride.status == "broadcasting",
+            Ride.created_at < cutoff,
+        )
+        .all()
+    )
+    if not stuck:
+        return 0
+
+    cancelled = 0
+    for ride in stuck:
+        # If the offer set is still populated, a greenlet is actively
+        # broadcasting this ride — leave it alone.
+        if r.exists(f"broadcast:{ride.id}:offered_to"):
+            continue
+        try:
+            ride_lifecycle.cancel(ride, actor="system",
+                                  reason="stuck_broadcasting_swept")
+            cancelled += 1
+            current_app.logger.warning(
+                "sweeper cancelled stuck ride %s (age=%ss)",
+                ride.id, int((datetime.utcnow() - ride.created_at).total_seconds()),
+            )
+            _report_to_sentry(
+                RuntimeError(f"ride {ride.id} stuck in broadcasting; swept"),
+                ride_id=ride.id, where="sweeper",
+            )
+        except ValueError:
+            # Another actor moved the ride's status between the query and
+            # the cancel — nothing to do.
+            db.session.rollback()
+        except Exception as e:  # noqa: BLE001
+            db.session.rollback()
+            current_app.logger.warning("sweeper cancel failed for %s: %s", ride.id, e)
+            _report_to_sentry(e, ride_id=ride.id, where="sweeper_cancel")
+    return cancelled
+
+
+def start_sweeper(app) -> None:
+    """Spawn the periodic sweeper greenlet. Called once per worker from
+    create_app(). Every worker runs the loop; the Redis leader-lock in
+    sweep_stuck_broadcasting() ensures only one actually sweeps per tick."""
+    def _loop():
+        # Small jitter so N workers don't all hit Redis in the same millisecond.
+        eventlet.sleep(2 + (id(app) % 5))
+        while True:
+            try:
+                with app.app_context():
+                    sweep_stuck_broadcasting()
+            except Exception as e:  # noqa: BLE001
+                try:
+                    app.logger.warning("sweeper loop error: %s", e)
+                except Exception:  # noqa: BLE001
+                    pass
+            eventlet.sleep(SWEEPER_INTERVAL_SECONDS)
+
+    eventlet.spawn_n(_loop)

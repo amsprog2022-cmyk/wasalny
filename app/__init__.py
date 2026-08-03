@@ -18,12 +18,18 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # Sentry must init before anything that might throw, so early exceptions
+    # get captured too. No-op when SENTRY_DSN isn't set.
+    _init_sentry(app)
+
     db.init_app(app)
     migrate.init_app(app, db)
     login_manager.init_app(app)
     login_manager.login_view = "auth.login"
     login_manager.login_message = "Please log in to continue."
-    socketio.init_app(app)
+    # message_queue lets emits from one gunicorn worker reach clients connected
+    # to a different worker — required now that we run with -w 2.
+    socketio.init_app(app, message_queue=app.config.get("REDIS_URL") or None)
     jwt.init_app(app)
 
     from app.models.user import User
@@ -98,6 +104,12 @@ def create_app(config_class=Config):
         _bootstrap_benha_regions(app)
         _bootstrap_stickers(app)
         _init_firebase_admin(app)
+
+    # Background sweeper — catches rides stuck in `broadcasting` because their
+    # matching greenlet died (worker recycled mid-round, deploy, crash). Runs
+    # in every worker but uses a Redis lock so only one worker sweeps per tick.
+    from app.services.matching import start_sweeper
+    start_sweeper(app)
 
     return app
 
@@ -366,6 +378,34 @@ def _apply_lightweight_migrations(app):
                         f"ALTER TABLE {table} ADD COLUMN {col} {sqlite_type}"
                     ))
     print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu ensured")
+
+
+def _init_sentry(app):
+    """Wire up Sentry error tracking. Silent no-op when SENTRY_DSN is unset
+    (local dev) or when the SDK isn't installed."""
+    import os as _os
+    dsn = (app.config.get("SENTRY_DSN") or "").strip()
+    if not dsn:
+        print("[sentry] SENTRY_DSN not set — error tracking disabled")
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.flask import FlaskIntegration
+    except ImportError:
+        print("[sentry] sentry-sdk not installed — error tracking disabled")
+        return
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            integrations=[FlaskIntegration()],
+            # Errors only. Perf traces would eat the free-tier quota fast.
+            traces_sample_rate=0.0,
+            environment=_os.getenv("RAILWAY_ENVIRONMENT", "production"),
+            release=(_os.getenv("RAILWAY_GIT_COMMIT_SHA") or "unknown")[:12],
+        )
+        print(f"[sentry] initialized for env={_os.getenv('RAILWAY_ENVIRONMENT', 'production')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[sentry] init failed: {e}")
 
 
 def _init_firebase_admin(app):
