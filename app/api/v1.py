@@ -72,6 +72,7 @@ def driver_login():
     return jsonify(
         {
             "access_token": create_access_token(identity=f"driver:{driver.id}", additional_claims=claims),
+            "refresh_token": create_refresh_token(identity=f"driver:{driver.id}", additional_claims=claims),
             "driver": driver.to_dict(),
             "must_change_password": bool(driver.must_change_password),
         }
@@ -193,3 +194,49 @@ def driver_set_status():
     driver.status = new_status
     db.session.commit()
     return jsonify(driver.to_dict())
+
+
+# Captain self-service profile update. Sensitive fields (name, national_id,
+# license_number, rating, service_kind, approval_status) stay admin-only —
+# the whitelist here is intentionally narrow so a driver can't grant
+# themselves privileges by editing their own row.
+_DRIVER_SELF_EDITABLE = {"car_model", "car_color", "car_plate", "wa_id"}
+
+
+@api_v1_bp.route("/driver/profile", methods=["PATCH"])
+@jwt_required()
+def driver_profile_update():
+    """Captain updates their own car details / phone number."""
+    if get_jwt().get("kind") != "driver":
+        return jsonify({"error": "driver_token_required"}), 403
+    driver_id = int(get_jwt_identity().split(":", 1)[1])
+    driver = Driver.query.get_or_404(driver_id)
+
+    body = request.json or {}
+    changed = {}
+    for field in _DRIVER_SELF_EDITABLE:
+        if field not in body:
+            continue
+        val = body[field]
+        if val is None:
+            continue
+        val = str(val).strip()
+        if field == "wa_id":
+            val = val.lstrip("+").replace(" ", "")
+            if not val.isdigit() or len(val) < 10:
+                return jsonify({"error": "invalid_wa_id"}), 400
+            # wa_id is unique — refuse to collide with another captain.
+            clash = Driver.query.filter(
+                Driver.wa_id == val, Driver.id != driver_id
+            ).first()
+            if clash is not None:
+                return jsonify({"error": "wa_id_taken"}), 409
+        if not val:
+            continue
+        if getattr(driver, field) != val:
+            setattr(driver, field, val)
+            changed[field] = val
+
+    if changed:
+        db.session.commit()
+    return jsonify({"updated": list(changed.keys()), "driver": driver.to_dict()})

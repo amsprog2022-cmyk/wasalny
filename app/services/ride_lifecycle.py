@@ -435,15 +435,8 @@ def no_show(ride: Ride, actor_driver_id: int) -> None:
     ride.cancel_reason = "customer_no_show"
     _record(ride.id, "no_show", "driver")
 
-    # Attach a pending fee to the customer's next trip.
-    db.session.add(
-        CustomerPendingFee(
-            customer_id=ride.customer_id,
-            reason="no_show",
-            amount_egp=_no_show_fee(),
-            from_ride_id=ride.id,
-        )
-    )
+    # No penalty fee — Ibrahim decided customers shouldn't be charged for
+    # missing a WhatsApp/GPS ride they may never have realized was on its way.
 
     from app.extensions import get_redis
     r = get_redis(current_app.config.get("REDIS_URL"))
@@ -457,7 +450,7 @@ def no_show(ride: Ride, actor_driver_id: int) -> None:
     push.send_to_customer(
         ride.customer_id,
         title="⚠️ رحلة اتلغت",
-        body=f"الكابتن حضر وانت ماحضرتش. غرامة {float(_no_show_fee()):.0f} ج.م هتتحسب في رحلتك الجاية.",
+        body="الكابتن حضر ومالقاش حد. لو محتاج رحلة تانية اطلبها من التطبيق.",
         data={"kind": "trip_no_show", "ride_id": ride.id},
         collapse_key=f"ride:{ride.id}",
     )

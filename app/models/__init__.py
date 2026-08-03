@@ -15,6 +15,7 @@ from app.models.ops import (
 )
 from app.models.captain_rating import CaptainRatingOfCustomer
 from app.models.setting import Setting
+from app.models.wallet import CustomerWallet, WalletTransaction
 
 __all__ = [
     "User",

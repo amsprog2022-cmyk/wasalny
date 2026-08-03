@@ -80,6 +80,12 @@ class Config:
     # Sentry error tracking. Silent no-op when unset (local dev).
     SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
+    # Captain end-of-trip extra charge (waiting time / detour / etc.).
+    # Captain enters an amount in this range; deducts from customer wallet
+    # or falls back to CustomerPendingFee when the wallet is short.
+    CAPTAIN_EXTRA_MIN_EGP = float(os.getenv("CAPTAIN_EXTRA_MIN_EGP", "5"))
+    CAPTAIN_EXTRA_MAX_EGP = float(os.getenv("CAPTAIN_EXTRA_MAX_EGP", "100"))
+
     # AI parser — gemini-2.0-flash was retired mid-2026, so we default to
     # the -latest alias which always follows Google's current fast model.
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

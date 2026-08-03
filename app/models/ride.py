@@ -47,6 +47,11 @@ class Ride(db.Model):
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
     commission_egp = db.Column(db.Numeric(8, 2), nullable=False)
     no_show_fee_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
+    # Captain end-of-trip surcharge (waiting time, detour, tolls). Deducted
+    # from the customer wallet on `POST /rides/<id>/captain-extra`, or booked
+    # as a CustomerPendingFee when the wallet is short. Stored on the ride so
+    # the customer app can render a receipt breakdown.
+    captain_extra_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
 
     status = db.Column(db.String(24), default="new", nullable=False, index=True)
     source = db.Column(db.String(16), default="app", nullable=False)
@@ -96,6 +101,7 @@ class Ride(db.Model):
             "price_egp": float(self.price_egp),
             "commission_egp": float(self.commission_egp),
             "no_show_fee_egp": float(self.no_show_fee_egp or 0),
+            "captain_extra_egp": float(self.captain_extra_egp or 0),
             "status": self.status,
             "source": self.source,
             "service_kind": self.service_kind,

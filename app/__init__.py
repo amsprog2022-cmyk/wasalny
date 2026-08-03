@@ -95,6 +95,7 @@ def create_app(config_class=Config):
     # Import all models so db.create_all() sees them
     from app.models import gemini_call as _gc  # noqa: F401
     from app.models import trip_chat as _tc    # noqa: F401
+    from app.models import wallet as _wl       # noqa: F401
 
     with app.app_context():
         db.create_all()
@@ -377,7 +378,26 @@ def _apply_lightweight_migrations(app):
                     conn.execute(text(
                         f"ALTER TABLE {table} ADD COLUMN {col} {sqlite_type}"
                     ))
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu ensured")
+        # captain_extra_egp on existing rides rows — defaults to 0 so old
+        # trips just show no extra charge on the receipt.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS captain_extra_egp "
+                "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "captain_extra_egp" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN captain_extra_egp "
+                    "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+                ))
+    # customer_wallets + wallet_transactions are new tables — db.create_all()
+    # handles them automatically; no ALTER needed. Print here so we can see it
+    # ran on every boot.
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra ensured")
 
 
 def _init_sentry(app):

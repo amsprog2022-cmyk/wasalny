@@ -21,6 +21,7 @@ import time
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
     create_access_token,
+    create_refresh_token,
     jwt_required,
     get_jwt,
     get_jwt_identity,
@@ -505,6 +506,13 @@ def _issue_customer_token(customer):
     )
 
 
+def _issue_customer_refresh_token(customer):
+    return create_refresh_token(
+        identity=f"customer:{customer.id}",
+        additional_claims={"kind": "customer"},
+    )
+
+
 def _customer_payload(customer, *, needs_password_setup=False):
     return {
         "id": customer.id,
@@ -539,6 +547,7 @@ def customer_register():
 
     return jsonify({
         "access_token": _issue_customer_token(customer),
+        "refresh_token": _issue_customer_refresh_token(customer),
         "customer": _customer_payload(customer),
     })
 
@@ -563,6 +572,7 @@ def customer_login():
     if not customer.password_hash:
         return jsonify({
             "access_token": _issue_customer_token(customer),
+            "refresh_token": _issue_customer_refresh_token(customer),
             "customer": _customer_payload(customer, needs_password_setup=True),
         })
 
@@ -573,6 +583,7 @@ def customer_login():
 
     return jsonify({
         "access_token": _issue_customer_token(customer),
+        "refresh_token": _issue_customer_refresh_token(customer),
         "customer": _customer_payload(customer),
     })
 
@@ -1338,3 +1349,221 @@ def rides_no_show(ride_id: int):
     except ValueError as e:
         return jsonify({"error": str(e)}), 409
     return jsonify(ride.to_dict(include_customer_contact=True))
+
+
+# ---------- Customer wallet ----------
+
+@rides_api_bp.get("/customer/wallet")
+@jwt_required()
+def customer_wallet_get():
+    """Balance + recent transactions for the logged-in customer."""
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    from app.services import wallet as wallet_svc
+    balance = wallet_svc.get_balance(cid)
+    txns = wallet_svc.recent_transactions(cid, limit=30)
+    return jsonify({
+        "balance_egp": float(balance),
+        "transactions": [t.to_dict() for t in txns],
+    })
+
+
+@rides_api_bp.post("/customer/wallet/topup")
+@jwt_required()
+def customer_wallet_topup():
+    """Stub. Real payment integration lands later. Returns 501 with a
+    clear message so the Flutter UI can render a 'coming soon' toast."""
+    cid = _customer_id_from_jwt()
+    if cid is None:
+        return jsonify({"error": "customer_token_required"}), 403
+    return jsonify({
+        "error": "topup_not_available_yet",
+        "message": "الشحن هيكون متاح قريباً",
+    }), 501
+
+
+# ---------- Captain end-of-trip extra charge ----------
+
+@rides_api_bp.post("/rides/<int:ride_id>/captain-extra")
+@jwt_required()
+def rides_captain_extra(ride_id: int):
+    """Captain adds a surcharge (5-100 EGP by default) at the end of the trip.
+
+    Tries the customer's wallet first; falls back to a `CustomerPendingFee`
+    when the balance is insufficient. Either path stores the amount on the
+    ride so the customer app can render a receipt breakdown.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status not in ("completed", "started"):
+        return jsonify({"error": "trip_not_finalized"}), 409
+
+    try:
+        amount = float((request.json or {}).get("amount_egp") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid_amount"}), 400
+    lo = float(current_app.config.get("CAPTAIN_EXTRA_MIN_EGP", 5))
+    hi = float(current_app.config.get("CAPTAIN_EXTRA_MAX_EGP", 100))
+    if amount < lo or amount > hi:
+        return jsonify({
+            "error": "amount_out_of_range",
+            "min_egp": lo, "max_egp": hi,
+        }), 400
+
+    # Idempotency: refuse to double-charge the same ride.
+    if float(ride.captain_extra_egp or 0) > 0:
+        return jsonify({"error": "already_charged"}), 409
+
+    from decimal import Decimal
+    from app.services import wallet as wallet_svc
+    from app.models.ride import CustomerPendingFee
+
+    method = None
+    txn = wallet_svc.try_debit(
+        ride.customer_id, amount,
+        reason="captain_extra", ride_id=ride.id,
+        note=f"إضافة الكابتن — رحلة #{ride.id}",
+    )
+    if txn is not None:
+        method = "wallet"
+    else:
+        # Wallet was short — book it as a pending fee for the next trip so
+        # the customer still pays, no captain lost.
+        db.session.add(CustomerPendingFee(
+            customer_id=ride.customer_id,
+            reason="captain_extra",
+            amount_egp=Decimal(str(amount)),
+            from_ride_id=ride.id,
+        ))
+        method = "pending_fee"
+
+    ride.captain_extra_egp = Decimal(str(amount))
+    db.session.commit()
+
+    # Best-effort notify.
+    from app.services import push_notifications as push
+    push.send_to_customer(
+        ride.customer_id,
+        title="💰 إضافة على رحلتك",
+        body=(
+            f"الكابتن ضاف {amount:.0f} ج.م على رحلتك."
+            + (" اتخصمت من محفظتك." if method == "wallet"
+               else " هتتحسب على أول رحلة جاية.")
+        ),
+        data={"kind": "captain_extra_added", "ride_id": ride.id,
+              "amount_egp": str(amount), "method": method},
+        collapse_key=f"ride:{ride.id}",
+    )
+
+    return jsonify({
+        "ok": True, "method": method,
+        "amount_egp": amount,
+        "ride": ride.to_dict(include_customer_contact=True),
+    })
+
+
+# ---------- WhatsApp arrival: pick destination + auto-price ----------
+
+@rides_api_bp.post("/rides/<int:ride_id>/arrived-and-set-destination")
+@jwt_required()
+def rides_arrived_set_destination(ride_id: int):
+    """Captain arrived at a WhatsApp pickup. Sends dropoff coordinates —
+    backend uses the captain's live GPS as pickup, calls the same
+    distance-based pricing the customer app uses, and marks the ride
+    arrived in a single call.
+
+    The captain no longer types a price; the app calculates it.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status != "assigned":
+        return jsonify({"error": "wrong_status", "status": ride.status}), 409
+
+    data = request.json or {}
+    try:
+        dlat = float(data["dropoff_lat"])
+        dlng = float(data["dropoff_lng"])
+    except (TypeError, KeyError, ValueError):
+        return jsonify({"error": "dropoff_lat + dropoff_lng required"}), 400
+
+    # Captain's live GPS = pickup. Fall back to the driver row snapshot
+    # (older when the captain isn't actively heartbeating).
+    from app.services import availability as av
+    from app.services import reverse_geocode as rg
+    pos = av.get_position(did)
+    if pos is None:
+        drv = db.session.get(Driver, did)
+        if drv and drv.latitude is not None and drv.longitude is not None:
+            pos = (float(drv.latitude), float(drv.longitude))
+    if pos is None:
+        return jsonify({"error": "no_captain_gps"}), 409
+    plat, plng = pos
+
+    from app.services import pricing as pricing_svc
+    q = pricing_svc.quote_by_coords(
+        ride.customer_id, plat, plng, dlat, dlng,
+    )
+
+    # Persist on the ride. `to_zone_id` was NULL for WhatsApp pickups —
+    # leave it that way (the address string is what UIs render for GPS rides).
+    from decimal import Decimal
+    ride.pickup_lat = plat
+    ride.pickup_lng = plng
+    ride.dropoff_lat = dlat
+    ride.dropoff_lng = dlng
+    ride.pickup_address = rg.resolve_place_name(plat, plng) or ride.pickup_address
+    ride.dropoff_address = rg.resolve_place_name(dlat, dlng)
+    ride.price_egp = Decimal(str(q.ride_price_egp))
+    ride.commission_egp = Decimal(str(q.commission_egp))
+    db.session.commit()
+
+    # Reuse the existing arrived path so all the standard side effects
+    # (sticker, socket, push) fire the same way as for app-booked rides.
+    try:
+        ride_lifecycle.arrived(ride, did)
+    except (PermissionError, ValueError) as e:
+        # Price/destination are saved. Arrival can be re-attempted.
+        return jsonify({
+            "warning": "price_saved_but_arrived_failed",
+            "detail": str(e),
+            "ride": ride.to_dict(include_customer_contact=True),
+        }), 200
+
+    # Emit price update on customer socket + push so the passenger sees
+    # the fare land the moment the captain confirms.
+    from app import socketio
+    from app.services import push_notifications as push
+    try:
+        socketio.emit(
+            "ride_price_updated",
+            {"ride_id": ride.id, "price_egp": float(ride.price_egp)},
+            namespace="/customer", room=f"customer:{ride.customer_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("price_updated emit failed: %s", e)
+    push.send_to_customer(
+        ride.customer_id,
+        title="💵 تم تحديد السعر",
+        body=f"السعر النهائي {float(ride.price_egp):.0f} ج.م",
+        data={"kind": "ride_price_updated", "ride_id": ride.id},
+        collapse_key=f"ride:{ride.id}",
+    )
+
+    return jsonify({
+        "ok": True,
+        "distance_km": q.distance_km,
+        "ride": ride.to_dict(include_customer_contact=True),
+    })
