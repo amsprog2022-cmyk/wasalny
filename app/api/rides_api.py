@@ -739,6 +739,7 @@ def customer_login():
     data = request.json or {}
     wa_id = (data.get("wa_id") or "").strip().lstrip("+")
     password = (data.get("password") or "").strip()
+    ticket = (data.get("verification_ticket") or "").strip()
 
     if not wa_id:
         return jsonify({"error": "wa_id required"}), 400
@@ -749,13 +750,20 @@ def customer_login():
     if customer.deleted_at is not None:
         return jsonify({"error": "account_deleted"}), 403
 
-    # Legacy account created before we required passwords — issue a token
-    # so the app can prompt the user to set one on the next screen.
+    # Legacy account (booked via WhatsApp before the app existed) has no
+    # password. Instead of forcing them to invent one, WhatsApp-verify them
+    # and log them in in the same call.
     if not customer.password_hash:
+        if not ticket:
+            return jsonify({"error": "verification_required"}), 401
+        if not wa_verify.consume_ticket(ticket, wa_id, "customer_reset"):
+            return jsonify({"error": "invalid_ticket"}), 403
+        customer.phone_verified_at = datetime.utcnow()
+        db.session.commit()
         return jsonify({
             "access_token": _issue_customer_token(customer),
             "refresh_token": _issue_customer_refresh_token(customer),
-            "customer": _customer_payload(customer, needs_password_setup=True),
+            "customer": _customer_payload(customer),
         })
 
     if not password:
