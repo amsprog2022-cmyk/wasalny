@@ -44,6 +44,13 @@ def index():
         }
         query = query.filter(Customer.id.in_(pending_ids)) if pending_ids else query.filter(False)
         query = query.filter(Customer.deleted_at.is_(None))
+    elif filter_ == "app_users":
+        # Only customers who signed up through the app (they have a
+        # password). Legacy WhatsApp-only rows have password_hash IS NULL.
+        query = query.filter(
+            Customer.deleted_at.is_(None),
+            Customer.password_hash.isnot(None),
+        )
     elif filter_ == "deleted":
         query = query.filter(Customer.deleted_at.isnot(None))
     else:
