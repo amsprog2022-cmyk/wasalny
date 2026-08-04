@@ -53,7 +53,7 @@
         <button class="btn-primary">انشر</button>
       </div>
     </form>
-    <p class="text-xs text-text-muted mt-3">المواعيد بتوقيت UTC — نفس التوقيت اللي باقي الداشبورد بيعرضه.</p>
+    <p class="text-xs text-text-muted mt-3">المواعيد بتوقيت القاهرة.</p>
   </div>
 
   <div class="card">
@@ -111,9 +111,9 @@
               {% endif %}
             </td>
             <td class="px-4 py-3">{{ a.title_ar or '—' }}</td>
-            <td class="px-4 py-3 text-text-muted">{{ a.starts_at.strftime('%H:%M · %d %b') if a.starts_at else '—' }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ a.starts_at | cairo }}</td>
             <td class="px-4 py-3 text-text-muted">
-              {% if a.ends_at %}{{ a.ends_at.strftime('%H:%M · %d %b') }}{% else %}دايماً{% endif %}
+              {% if a.ends_at %}{{ a.ends_at | cairo }}{% else %}دايماً{% endif %}
             </td>
             <td class="px-4 py-3">
               {% if a.is_live %}

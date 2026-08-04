@@ -96,6 +96,14 @@ def create_app(config_class=Config):
     def index():
         return redirect(url_for("dashboard.home"))
 
+    @app.template_filter("cairo")
+    def _cairo(value, fmt="%H:%M · %d %b"):
+        """Render a naive-UTC column in Cairo wall-clock."""
+        if value is None:
+            return "—"
+        from app.services.localtime import utc_to_cairo
+        return utc_to_cairo(value).strftime(fmt)
+
     # Import all models so db.create_all() sees them
     from app.models import gemini_call as _gc  # noqa: F401
     from app.models import trip_chat as _tc    # noqa: F401

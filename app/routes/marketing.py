@@ -12,6 +12,7 @@ from app.models.customer import Customer
 from app.models.ride import Ride
 from app.models.ops import AdminBroadcast, Announcement
 from app.services import audit
+from app.services import localtime
 from app.services import push_notifications as push
 
 
@@ -127,12 +128,13 @@ ANNOUNCEMENT_PRIORITIES = ("info", "warning", "critical")
 
 
 def _parse_local(value: str | None) -> datetime | None:
-    """Read a browser `datetime-local` value. Everything else in the app
-    stores naive UTC, so the admin is entering UTC too."""
+    """Read a browser `datetime-local` value as Cairo wall-clock and return
+    naive UTC. Reading it as UTC put every announcement 2-3 hours in the
+    future, so a card scheduled for "now" never went live."""
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M")
+        return localtime.cairo_to_utc(datetime.strptime(value, "%Y-%m-%dT%H:%M"))
     except ValueError:
         return None
 

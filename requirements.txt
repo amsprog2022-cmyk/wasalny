@@ -18,3 +18,4 @@ rq==1.16.2
 fakeredis==2.23.3
 firebase-admin==6.5.0
 sentry-sdk[flask]==2.15.0
+tzdata==2024.1
