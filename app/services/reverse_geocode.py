@@ -28,6 +28,7 @@ from flask import current_app
 from app import db
 from app.extensions import get_redis
 from app.models.zone import Zone
+from app.services.geo import haversine_km
 
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
@@ -220,6 +221,16 @@ NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 # a trip from Shubra El Kheima or an occasional Cairo destination still works.
 SEARCH_VIEWBOX = "30.90,30.60,31.60,29.90"
 
+# Benha and the villages around it, ~20km across. Searched with bounded=1
+# first: this box is the only reason a query like "الاهرام" offers شارع
+# الاهرام in Benha before the Giza pyramids, which outrank it globally on
+# every measure Nominatim has.
+LOCAL_VIEWBOX = "30.96,30.67,31.40,30.27"
+
+# Benha town centre. Local hits are ordered by distance from here, since
+# the nearest match is almost always the one a Benha customer meant.
+BENHA_CENTRE_LAT, BENHA_CENTRE_LNG = 30.4667, 31.1833
+
 
 # Landmark-ish Nominatim classes we treat as a confident pickup hit.
 # Wide categories like `place` (city/town/suburb) are excluded because
@@ -243,23 +254,7 @@ _CONFIDENT_PICKUP_CLASSES = {
 _CONFIDENT_BBOX_WIDTH_DEG = 0.005
 
 
-def _nominatim_search_raw(query: str, limit: int = 6) -> list[dict]:
-    """Fetch raw Nominatim /search results (including class + bbox) for a
-    query, biased to Qalyubia + Greater Cairo, cached 24h."""
-    q = (query or "").strip()
-    if len(q) < 3:
-        return []
-
-    r = get_redis(current_app.config.get("REDIS_URL"))
-    cache_key = f"geo:search_raw:{_normalize(q)}"
-    cached = r.get(cache_key)
-    if cached is not None:
-        raw = cached if isinstance(cached, str) else cached.decode("utf-8", "ignore")
-        try:
-            return json.loads(raw)
-        except ValueError:
-            pass
-
+def _nominatim_query(q: str, viewbox: str, bounded: int, limit: int) -> list[dict]:
     results: list[dict] = []
     try:
         resp = requests.get(
@@ -269,8 +264,8 @@ def _nominatim_search_raw(query: str, limit: int = 6) -> list[dict]:
                 "format": "jsonv2",
                 "accept-language": "ar",
                 "countrycodes": "eg",
-                "viewbox": SEARCH_VIEWBOX,
-                "bounded": 0,
+                "viewbox": viewbox,
+                "bounded": bounded,
                 "limit": limit,
                 "addressdetails": 0,
             },
@@ -308,6 +303,49 @@ def _nominatim_search_raw(query: str, limit: int = 6) -> list[dict]:
                 })
     except (requests.RequestException, ValueError):
         return []
+    return results
+
+
+def _nominatim_search_raw(query: str, limit: int = 6) -> list[dict]:
+    """Fetch raw Nominatim /search results (including class + bbox), Benha
+    first, cached 24h.
+
+    Two passes. The first is locked to the Benha box, so a name that also
+    exists somewhere famous resolves locally instead of sending the customer
+    to Giza. The wider Qalyubia + Cairo pass only runs when the local one
+    came up short, which keeps most searches at one request against
+    Nominatim's 1/sec free tier.
+    """
+    q = (query or "").strip()
+    if len(q) < 3:
+        return []
+
+    r = get_redis(current_app.config.get("REDIS_URL"))
+    # v2: entries cached before the local-first pass carry the old ordering.
+    cache_key = f"geo:search_raw:v2:{_normalize(q)}"
+    cached = r.get(cache_key)
+    if cached is not None:
+        raw = cached if isinstance(cached, str) else cached.decode("utf-8", "ignore")
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+
+    local = _nominatim_query(q, LOCAL_VIEWBOX, bounded=1, limit=limit)
+    local.sort(key=lambda x: haversine_km(
+        BENHA_CENTRE_LAT, BENHA_CENTRE_LNG, x["lat"], x["lng"]))
+
+    results = local
+    if len(results) < limit:
+        seen = {(round(x["lat"], 4), round(x["lng"], 4)) for x in results}
+        for item in _nominatim_query(q, SEARCH_VIEWBOX, bounded=0, limit=limit):
+            key = (round(item["lat"], 4), round(item["lng"], 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
+            if len(results) >= limit:
+                break
 
     try:
         r.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(results, ensure_ascii=False))
