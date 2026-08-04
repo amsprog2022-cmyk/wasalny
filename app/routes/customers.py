@@ -10,6 +10,7 @@ from sqlalchemy import func
 from app import db
 from app.models.customer import Customer
 from app.models.ride import Ride, CustomerPendingFee
+from app.services import audit
 
 
 customers_bp = Blueprint("customers", __name__, url_prefix="/customers")
@@ -33,6 +34,7 @@ def index():
             for r in Ride.query.filter(Ride.created_at >= thirty).with_entities(Ride.customer_id).all()
         }
         query = query.filter(Customer.id.in_(active_ids)) if active_ids else query.filter(False)
+        query = query.filter(Customer.deleted_at.is_(None))
     elif filter_ == "with_pending":
         pending_ids = {
             r.customer_id
@@ -41,6 +43,11 @@ def index():
             .all()
         }
         query = query.filter(Customer.id.in_(pending_ids)) if pending_ids else query.filter(False)
+        query = query.filter(Customer.deleted_at.is_(None))
+    elif filter_ == "deleted":
+        query = query.filter(Customer.deleted_at.isnot(None))
+    else:
+        query = query.filter(Customer.deleted_at.is_(None))
 
     customers = query.order_by(Customer.id.desc()).limit(200).all()
 
@@ -113,3 +120,35 @@ def waive_fee(customer_id: int, fee_id: int):
     db.session.commit()
     flash("Fee waived.", "success")
     return redirect(url_for("customers.show", customer_id=customer_id))
+
+
+@customers_bp.route("/<int:customer_id>/delete", methods=["POST"])
+@login_required
+def delete(customer_id: int):
+    """Soft-delete a customer account — same effect as the in-app
+    'delete-account' endpoint. Ride history stays intact so captain
+    earnings and reports remain consistent.
+    """
+    if not current_user.is_admin:
+        flash("Admins only.", "error")
+        return redirect(url_for("customers.show", customer_id=customer_id))
+    customer = Customer.query.get_or_404(customer_id)
+    if customer.deleted_at is not None:
+        flash("الحساب ده متمسوح خلاص.", "warning")
+        return redirect(url_for("customers.show", customer_id=customer_id))
+
+    before = {"name": customer.name, "wa_id": customer.wa_id, "opted_in": customer.opted_in}
+    customer.deleted_at = datetime.utcnow()
+    customer.name = "محذوف"
+    customer.fcm_token = None
+    customer.opted_in = False
+    db.session.commit()
+    audit.record(
+        "customer.delete",
+        target_kind="customer",
+        target_id=customer.id,
+        before=before,
+        after={"deleted_at": customer.deleted_at.isoformat()},
+    )
+    flash("الحساب اتمسح.", "success")
+    return redirect(url_for("customers.index"))

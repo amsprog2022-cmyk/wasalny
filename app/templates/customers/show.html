@@ -4,9 +4,19 @@
 <div class="p-6 max-w-5xl mx-auto space-y-6">
   <div class="flex items-center justify-between">
     <div>
-      <h1 class="text-2xl font-bold">{{ customer.name or '(بدون اسم)' }}</h1>
+      <h1 class="text-2xl font-bold">
+        {{ customer.name or '(بدون اسم)' }}
+        {% if customer.deleted_at %}<span class="text-xs px-2 py-1 rounded-full bg-danger/20 text-danger align-middle">محذوف · {{ customer.deleted_at.strftime('%d %b') }}</span>{% endif %}
+      </h1>
       <p class="text-text-muted text-sm">📞 <span dir="ltr">{{ customer.wa_id }}</span></p>
     </div>
+    {% if current_user.is_admin and not customer.deleted_at %}
+      <form method="post"
+            action="{{ url_for('customers.delete', customer_id=customer.id) }}"
+            onsubmit="return confirm('متأكد إنك عايز تمسح حساب {{ (customer.name or customer.wa_id)|e }}؟ الرحلات هتفضل موجودة، بس مش هيقدر يفتح التطبيق تاني.');">
+        <button class="text-danger hover:underline text-sm">🗑 امسح الحساب</button>
+      </form>
+    {% endif %}
   </div>
 
   <div class="grid grid-cols-3 gap-4">

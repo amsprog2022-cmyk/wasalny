@@ -16,7 +16,7 @@
   </form>
 
   <div class="flex gap-2 mb-4">
-    {% for slug, label in [('all','الكل'), ('active','نشيطين (٣٠ يوم)'), ('with_pending','عليهم غرامات')] %}
+    {% for slug, label in [('all','الكل'), ('active','نشيطين (٣٠ يوم)'), ('with_pending','عليهم غرامات'), ('deleted','محذوفين')] %}
       <a href="{{ url_for('customers.index', filter=slug, q=q) }}"
          class="px-4 py-2 rounded-full text-sm {% if active_filter == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
         {{ label }}
@@ -38,9 +38,12 @@
       </thead>
       <tbody>
         {% for c in customers %}
-          <tr class="border-t border-white/5 hover:bg-white/[0.02]">
+          <tr class="border-t border-white/5 hover:bg-white/[0.02] {% if c.deleted_at %}opacity-60{% endif %}">
             <td class="px-4 py-3 text-text-muted">#{{ c.id }}</td>
-            <td class="px-4 py-3">{{ c.name or '—' }}</td>
+            <td class="px-4 py-3">
+              {{ c.name or '—' }}
+              {% if c.deleted_at %}<span class="ml-1 text-xs px-2 py-0.5 rounded-full bg-danger/20 text-danger">محذوف</span>{% endif %}
+            </td>
             <td class="px-4 py-3 text-text-muted font-mono" dir="ltr">{{ c.wa_id }}</td>
             <td class="px-4 py-3">{{ ride_counts.get(c.id, 0) }}</td>
             <td class="px-4 py-3 text-text-muted">{{ c.created_at.strftime('%d %b') if c.created_at else '—' }}</td>
