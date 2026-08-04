@@ -434,10 +434,27 @@ def _apply_lightweight_migrations(app):
                     "ALTER TABLE rides ADD COLUMN wallet_discount_egp "
                     "NUMERIC(8,2) DEFAULT 0 NOT NULL"
                 ))
+
+        # Change the captain parked in the customer's wallet instead of
+        # handing back coins. 0 on every historical ride.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS change_credit_egp "
+                "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "change_credit_egp" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN change_credit_egp "
+                    "NUMERIC(8,2) DEFAULT 0 NOT NULL"
+                ))
     # The wallet tables (customer + driver) are new tables — db.create_all()
     # handles them automatically; no ALTER needed. Print here so we can see it
     # ran on every boot.
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit ensured")
 
 
 def _init_sentry(app):

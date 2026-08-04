@@ -80,15 +80,25 @@ class Config:
     # Sentry error tracking. Silent no-op when unset (local dev).
     SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
-    # Captain end-of-trip extra charge (waiting time / detour / etc.).
-    # Rides are cash, so this simply raises what the customer hands over.
-    CAPTAIN_EXTRA_MIN_EGP = float(os.getenv("CAPTAIN_EXTRA_MIN_EGP", "5"))
-    CAPTAIN_EXTRA_MAX_EGP = float(os.getenv("CAPTAIN_EXTRA_MAX_EGP", "100"))
+    # Change the captain couldn't hand back in cash, parked in the customer's
+    # wallet for a later ride. The window is how long after completion he can
+    # still record it.
+    CHANGE_CREDIT_MIN_EGP = float(os.getenv("CHANGE_CREDIT_MIN_EGP", "5"))
+    CHANGE_CREDIT_MAX_EGP = float(os.getenv("CHANGE_CREDIT_MAX_EGP", "100"))
+    CHANGE_CREDIT_WINDOW_MINUTES = int(
+        os.getenv("CHANGE_CREDIT_WINDOW_MINUTES", "60")
+    )
 
     # Unpaid commission a captain may carry before he is blocked from going
     # online. Rides settle in cash, so this debt is the only lever we have to
     # make him come in and hand the money over.
     CAPTAIN_MAX_DEBT_EGP = float(os.getenv("CAPTAIN_MAX_DEBT_EGP", "300"))
+    # Parked customer change is exempt from that gate, but only up to here —
+    # an unlimited exemption is a standing invitation to recycle cash through
+    # a friendly customer's wallet and never settle.
+    CAPTAIN_MAX_CHANGE_EXEMPT_EGP = float(
+        os.getenv("CAPTAIN_MAX_CHANGE_EXEMPT_EGP", "300")
+    )
 
     # AI parser — gemini-2.0-flash was retired mid-2026, so we default to
     # the -latest alias which always follows Google's current fast model.

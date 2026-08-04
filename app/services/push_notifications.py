@@ -5,6 +5,10 @@ service account env var) so the rest of the app keeps working. Call
 `_init_firebase_admin` at app boot in app/__init__.py — this module assumes
 Firebase Admin has already been initialised.
 
+Broadcasts have a side effect worth knowing about: tokens FCM reports as
+permanently dead are cleared from the Customer/Driver rows, so a fan-out
+both sends and prunes.
+
 Payload shape (both `notification` + `data` for maximum flexibility):
   notification: shown by the OS when the app is backgrounded/killed
   data: parsed by the Flutter app to deep-link into the right screen
@@ -141,16 +145,17 @@ def send_to_driver(driver_id: int, *, title: str, body: str,
     return _send(d.fcm_token, title, body, data, collapse_key)
 
 
-def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
-                    data: dict | None = None, collapse_key: str | None = None) -> int:
-    """Fan-out. Returns count of successful pushes."""
-    if not driver_ids:
-        return 0
-    drivers = Driver.query.filter(Driver.id.in_(driver_ids)).all()
-    tokens = [d.fcm_token for d in drivers if d.fcm_token]
+# FCM rejects a multicast carrying more than this many tokens.
+_MULTICAST_CHUNK = 500
+
+
+def _send_multicast(tokens: list[str], title: str, body: str,
+                    data: dict | None = None,
+                    collapse_key: str | None = None) -> int:
+    """Fan out to raw tokens. Returns the count FCM accepted."""
+    tokens = [t for t in tokens if t]
     if not tokens:
         return 0
-
     m = _messaging()
     if m is None:
         return 0
@@ -159,35 +164,118 @@ def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
     is_ride_offer = string_data.get("kind") == "trip_offered"
     channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
 
-    try:
-        # Prefer batch send when we have multiple recipients (single HTTP call)
-        message = m.MulticastMessage(
-            tokens=tokens,
-            notification=m.Notification(title=title, body=body),
-            data=string_data,
-            android=m.AndroidConfig(
-                priority="high",
-                collapse_key=collapse_key,
-                notification=m.AndroidNotification(
-                    sound="default",
-                    channel_id=channel_id,
-                ),
-            ),
-            apns=m.APNSConfig(
-                headers={"apns-priority": "10"},
-                payload=m.APNSPayload(
-                    aps=m.Aps(
+    sent = 0
+    dead: list[str] = []
+    for i in range(0, len(tokens), _MULTICAST_CHUNK):
+        chunk = tokens[i:i + _MULTICAST_CHUNK]
+        try:
+            message = m.MulticastMessage(
+                tokens=chunk,
+                notification=m.Notification(title=title, body=body),
+                data=string_data,
+                android=m.AndroidConfig(
+                    priority="high",
+                    collapse_key=collapse_key,
+                    notification=m.AndroidNotification(
                         sound="default",
-                        content_available=True,
-                        mutable_content=True,
-                        interruption_level=("time-sensitive"
-                                            if is_ride_offer else None),
+                        channel_id=channel_id,
                     ),
                 ),
-            ),
-        )
-        resp = m.send_each_for_multicast(message)
-        return int(resp.success_count or 0)
+                apns=m.APNSConfig(
+                    # Same custom_data workaround as _send: firebase-admin
+                    # 6.5.0's Aps has no interruption_level kwarg, and passing
+                    # one raises TypeError whatever its value — which the
+                    # per-chunk except would swallow, silently delivering zero.
+                    headers={"apns-priority": "10"},
+                    payload=m.APNSPayload(
+                        aps=m.Aps(
+                            sound="default",
+                            content_available=True,
+                            mutable_content=True,
+                            custom_data=(
+                                {"interruption-level": "time-sensitive"}
+                                if is_ride_offer else None
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            resp = m.send_each_for_multicast(message)
+            sent += int(resp.success_count or 0)
+            dead.extend(_dead_tokens(chunk, resp))
+        except Exception as e:  # noqa: BLE001
+            # One bad chunk must not sink the rest of a 10k broadcast.
+            current_app.logger.warning("FCM batch send failed: %s", e)
+    if dead:
+        _forget_tokens(dead)
+    return sent
+
+
+def _dead_tokens(chunk: list[str], resp) -> list[str]:
+    """Tokens FCM says will never work again — uninstalled apps, mostly.
+
+    Anything else (a timeout, a quota trip) is transient and must be left
+    alone; deleting on those would silently unsubscribe live users.
+    """
+    out = []
+    for token, r in zip(chunk, getattr(resp, "responses", []) or []):
+        exc = getattr(r, "exception", None)
+        if exc is None:
+            continue
+        if type(exc).__name__ in ("UnregisteredError", "SenderIdMismatchError"):
+            out.append(token)
+    return out
+
+
+def _forget_tokens(tokens: list[str]) -> None:
+    """Clear dead tokens so the next broadcast doesn't pay for them again."""
+    try:
+        for model in (Customer, Driver):
+            (model.query
+             .filter(model.fcm_token.in_(tokens))
+             .update({model.fcm_token: None}, synchronize_session=False))
+        db.session.commit()
+        current_app.logger.info("cleared %d dead FCM tokens", len(tokens))
     except Exception as e:  # noqa: BLE001
-        current_app.logger.warning("FCM batch send failed: %s", e)
+        db.session.rollback()
+        current_app.logger.warning("FCM token cleanup failed: %s", e)
+
+
+def send_to_drivers(driver_ids: list[int], *, title: str, body: str,
+                    data: dict | None = None, collapse_key: str | None = None) -> int:
+    """Fan-out. Returns count of successful pushes."""
+    if not driver_ids:
         return 0
+    drivers = Driver.query.filter(Driver.id.in_(driver_ids)).all()
+    return _send_multicast(
+        [d.fcm_token for d in drivers if d.fcm_token],
+        title, body, data, collapse_key,
+    )
+
+
+def broadcast_push(audience: str, *, title: str, body: str,
+                   data: dict | None = None) -> dict:
+    """Admin broadcast to every registered device.
+
+    `audience` is one of customer / driver / both. Returns per-side counts so
+    the admin page can report what actually went out rather than how many
+    accounts exist.
+    """
+    result = {"customers": 0, "drivers": 0}
+    # Only the token column — at 10k accounts, hydrating full ORM rows to read
+    # one string each is the difference between a query and an outage.
+    if audience in ("customer", "both"):
+        tokens = [
+            row[0] for row in
+            db.session.query(Customer.fcm_token)
+            .filter(Customer.fcm_token.isnot(None)).all()
+        ]
+        result["customers"] = _send_multicast(tokens, title, body, data)
+    if audience in ("driver", "both"):
+        tokens = [
+            row[0] for row in
+            db.session.query(Driver.fcm_token)
+            .filter(Driver.fcm_token.isnot(None)).all()
+        ]
+        result["drivers"] = _send_multicast(tokens, title, body, data)
+    return result

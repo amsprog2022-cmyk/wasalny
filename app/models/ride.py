@@ -49,10 +49,9 @@ class Ride(db.Model):
     price_egp = db.Column(db.Numeric(8, 2), nullable=False)
     commission_egp = db.Column(db.Numeric(8, 2), nullable=False)
     no_show_fee_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
-    # Captain end-of-trip surcharge (waiting time, detour, tolls) added via
-    # `POST /rides/<id>/captain-extra`. Rides settle in cash, so this simply
-    # raises what the customer hands over — commission_egp is topped up by
-    # the platform's cut of it at the same moment.
+    # Retired end-of-trip surcharge. No endpoint writes this any more — the
+    # column stays because live rides carry non-zero values and dropping it
+    # would rewrite money that was already collected.
     captain_extra_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
     # Every ride is paid in cash — there is no payment provider. This column is
     # how much of the total was covered by the customer's wallet credit
@@ -60,6 +59,12 @@ class Ride(db.Model):
     # The platform eats it out of its own commission; the captain is always
     # made whole for `net_egp`.
     wallet_discount_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
+    # Change the captain couldn't give back in cash, parked in the customer's
+    # wallet instead (fare 150, customer hands over 200 → 50 lands here). The
+    # customer hands over that much *more* cash now and spends it on a later
+    # ride, so it raises `cash_due_egp` but never `total_egp` — the platform
+    # takes no commission on change.
+    change_credit_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
 
     status = db.Column(db.String(24), default="new", nullable=False, index=True)
     source = db.Column(db.String(16), default="app", nullable=False)
@@ -105,9 +110,11 @@ class Ride(db.Model):
     @property
     def cash_due_egp(self) -> Decimal:
         """Cash the customer actually hands over — the total less whatever
-        wallet credit covered. Never below zero."""
+        wallet credit covered, plus any change parked in their wallet."""
         due = self.total_egp - Decimal(str(self.wallet_discount_egp or 0))
-        return due if due > 0 else Decimal("0.00")
+        if due < 0:
+            due = Decimal("0.00")
+        return due + Decimal(str(self.change_credit_egp or 0))
 
     def to_dict(self, *, include_customer_contact: bool = False) -> dict:
         """Serialize the ride.
@@ -139,6 +146,7 @@ class Ride(db.Model):
             "total_egp": float(self.total_egp),
             "net_egp": float(self.net_egp),
             "wallet_discount_egp": float(self.wallet_discount_egp or 0),
+            "change_credit_egp": float(self.change_credit_egp or 0),
             "cash_due_egp": float(self.cash_due_egp),
             "status": self.status,
             "source": self.source,
@@ -149,6 +157,11 @@ class Ride(db.Model):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "cancel_reason": self.cancel_reason,
             "rating": self.rating,
+            # The customer app gates the captain card *and* the chat button on
+            # this, so every path that serializes a ride has to carry it —
+            # socket events included, or the first event after assignment wipes
+            # the captain out of the trip screen.
+            "driver": self.driver.to_dict() if self.driver else None,
         }
         if include_customer_contact and self.customer is not None:
             data["customer"] = {

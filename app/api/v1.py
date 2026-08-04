@@ -14,6 +14,8 @@ from flask_jwt_extended import (
     get_jwt,
 )
 
+from sqlalchemy.orm import joinedload
+
 from app import db
 from app.models import User, Driver, Conversation, Message, RideRequest, Customer
 from app.services import inbox as inbox_svc
@@ -73,7 +75,7 @@ def driver_login():
         {
             "access_token": create_access_token(identity=f"driver:{driver.id}", additional_claims=claims),
             "refresh_token": create_refresh_token(identity=f"driver:{driver.id}", additional_claims=claims),
-            "driver": driver.to_dict(),
+            "driver": driver.to_dict(include_status=True),
             "must_change_password": bool(driver.must_change_password),
         }
     )
@@ -114,7 +116,7 @@ def driver_reset_password():
     return jsonify({
         "access_token": create_access_token(identity=f"driver:{driver.id}", additional_claims=claims),
         "refresh_token": create_refresh_token(identity=f"driver:{driver.id}", additional_claims=claims),
-        "driver": driver.to_dict(),
+        "driver": driver.to_dict(include_status=True),
         "must_change_password": False,
     })
 
@@ -202,7 +204,7 @@ def driver_me():
         return jsonify({"error": "driver_token_required"}), 403
     driver_id = int(get_jwt_identity().split(":", 1)[1])
     driver = Driver.query.get_or_404(driver_id)
-    return jsonify(driver.to_dict())
+    return jsonify(driver.to_dict(include_status=True))
 
 
 @api_v1_bp.route("/driver/rides")
@@ -214,6 +216,7 @@ def driver_rides():
     driver_id = int(get_jwt_identity().split(":", 1)[1])
     rides = (
         Ride.query.filter_by(driver_id=driver_id)
+        .options(joinedload(Ride.driver))
         .order_by(Ride.created_at.desc())
         .limit(50)
         .all()
@@ -233,7 +236,7 @@ def driver_set_status():
         return jsonify({"error": "invalid_status"}), 400
     driver.status = new_status
     db.session.commit()
-    return jsonify(driver.to_dict())
+    return jsonify(driver.to_dict(include_status=True))
 
 
 # Captain self-service profile update. Sensitive fields (name, national_id,
@@ -279,4 +282,7 @@ def driver_profile_update():
 
     if changed:
         db.session.commit()
-    return jsonify({"updated": list(changed.keys()), "driver": driver.to_dict()})
+    return jsonify({
+        "updated": list(changed.keys()),
+        "driver": driver.to_dict(include_status=True),
+    })

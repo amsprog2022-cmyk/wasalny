@@ -27,6 +27,13 @@
       {% if ride.no_show_fee_egp and ride.no_show_fee_egp > 0 %}
         <p class="text-warning text-xs">+ {{ '%.2f'|format(ride.no_show_fee_egp) }} ج.م غرامة ماحضرش</p>
       {% endif %}
+      {% if ride.wallet_discount_egp and ride.wallet_discount_egp > 0 %}
+        <p class="text-success text-xs">− {{ '%.2f'|format(ride.wallet_discount_egp) }} ج.م من محفظة العميل</p>
+      {% endif %}
+      {% if ride.change_credit_egp and ride.change_credit_egp > 0 %}
+        <p class="text-success text-xs">+ {{ '%.2f'|format(ride.change_credit_egp) }} ج.م باقي راح لمحفظة العميل</p>
+      {% endif %}
+      <p class="text-text-muted text-xs mt-1">كاش من العميل: {{ '%.2f'|format(ride.cash_due_egp) }} ج.م</p>
     </div>
     <div class="card">
       <p class="text-text-muted text-xs">العميل</p>

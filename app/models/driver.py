@@ -112,8 +112,15 @@ class Driver(db.Model):
             plain.encode("utf-8"), self.password_hash.encode("utf-8")
         )
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, *, include_status: bool = False) -> dict:
+        """Serialize the captain.
+
+        `include_status` — expose the captain's own discipline/active state.
+        Only for endpoints the captain calls about himself; this rides along
+        inside every ride payload otherwise, telling customers which of our
+        captains is suspended.
+        """
+        data = {
             "id": self.id,
             "wa_id": self.wa_id,
             "name": self.name,
@@ -123,6 +130,8 @@ class Driver(db.Model):
             "category": self.category,
             "rating": float(self.rating) if self.rating is not None else None,
             "total_trips": self.total_trips,
-            "discipline_status": self.discipline_status,
-            "is_active": self.is_active,
         }
+        if include_status:
+            data["discipline_status"] = self.discipline_status
+            data["is_active"] = self.is_active
+        return data

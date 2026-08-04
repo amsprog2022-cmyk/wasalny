@@ -57,12 +57,18 @@ def index():
         .all()
     )
     total_owed = sum((-w.balance_egp for w, _ in debtors), Decimal("0"))
+    # Part of that debt is customer change the captain parked in wallets, not
+    # commission. It still has to come back, but it does not mean he has been
+    # sitting on our cut, so the desk should be able to tell them apart.
+    change_held = wallet_svc.driver_change_held_bulk([d.id for _, d in debtors])
     return render_template(
         "wallets/index.html",
         debtors=debtors,
         creditors=creditors,
         customer_credit=customer_credit,
         total_owed=total_owed,
+        change_held=change_held,
+        total_change_held=sum(change_held.values(), Decimal("0")),
     )
 
 

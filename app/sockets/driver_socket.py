@@ -90,7 +90,7 @@ class DriverNamespace(Namespace):
                 "owed_egp": float(owed),
                 "max_debt_egp": float(cap),
                 "message_ar": (
-                    f"عليك {float(owed):.0f} ج.م عمولة. سدد الاول عشان تشتغل تاني."
+                    f"عليك {float(owed):.0f} ج.م للإدارة. سدد الاول عشان تشتغل تاني."
                 ),
             })
             return

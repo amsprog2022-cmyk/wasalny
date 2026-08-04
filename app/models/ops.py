@@ -176,6 +176,23 @@ class Announcement(db.Model):
     created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"))
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
+    @property
+    def is_live(self) -> bool:
+        now = datetime.utcnow()
+        if self.starts_at and self.starts_at > now:
+            return False
+        return self.ends_at is None or self.ends_at > now
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title_ar": self.title_ar,
+            "body_ar": self.body_ar,
+            "priority": self.priority,
+            "starts_at": self.starts_at.isoformat() if self.starts_at else None,
+            "ends_at": self.ends_at.isoformat() if self.ends_at else None,
+        }
+
 
 # ---------- Immutable audit log ----------
 

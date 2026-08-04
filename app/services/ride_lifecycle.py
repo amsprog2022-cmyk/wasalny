@@ -243,9 +243,10 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     db.session.commit()
 
     driver = db.session.get(Driver, driver_id)
-    driver_payload = driver.to_dict() if driver else None
 
-    _emit_customer(ride, "trip_assigned", {"driver": driver_payload})
+    # The driver rides inside ride.to_dict() now — a sibling key here would be
+    # dropped, because the app replaces its whole Ride object on every merge.
+    _emit_customer(ride, "trip_assigned")
     _emit_driver(driver_id, "trip_confirmed", {"ride": ride.to_dict()})
     _emit_inbox(ride, "assigned")
 

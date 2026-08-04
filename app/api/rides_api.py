@@ -17,7 +17,8 @@ Endpoints:
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
@@ -27,6 +28,8 @@ from flask_jwt_extended import (
     get_jwt,
     get_jwt_identity,
 )
+
+from sqlalchemy.orm import joinedload
 
 from app import db
 from app.extensions import get_redis
@@ -217,10 +220,9 @@ def driver_earnings():
         }
 
     # Per-trip breakdown for today so captains can eyeball each ride's
-    # gross / commission / net. Cash reconciliation: since every ride is
-    # cash today (no payment provider yet), `cash_owed_egp` == today's
-    # summed commissions — that's what the captain owes admin at
-    # end-of-shift.
+    # gross / commission / net. `gross_egp` is fare only — change parked in a
+    # customer's wallet is reported separately, because the captain collected
+    # it but earns nothing on it and owes every piastre back.
     today_trips_rows = (
         Ride.query.filter(
             Ride.driver_id == did,
@@ -239,6 +241,8 @@ def driver_earnings():
             "dropoff_address": r.dropoff_address,
             "gross_egp": float(r.total_egp),
             "captain_extra_egp": float(r.captain_extra_egp or 0),
+            "change_credit_egp": float(r.change_credit_egp or 0),
+            "cash_collected_egp": float(r.cash_due_egp),
             "commission_egp": float(r.commission_egp or 0),
             "net_egp": float(r.net_egp),
             "was_cash": True,  # every ride is cash for now
@@ -260,6 +264,10 @@ def driver_earnings():
             # is the number the captain actually has to hand over, and the one
             # the debt gate blocks on.
             "cash_owed_egp": float(_wallet_svc.driver_owed(did)),
+            # Part of the above that is customer change, not commission. It
+            # still has to be handed over, but it does not count toward the
+            # debt gate.
+            "change_held_egp": float(_wallet_svc.driver_change_held(did)),
             "wallet_balance_egp": float(_wallet_svc.driver_balance(did)),
             "max_debt_egp": float(current_app.config.get("CAPTAIN_MAX_DEBT_EGP", 300)),
         }
@@ -274,9 +282,18 @@ def driver_wallet():
     if did is None:
         return jsonify({"error": "driver_token_required"}), 403
     blocked, owed, cap = _wallet_svc.driver_debt_block(did)
+    exempt_cap = Decimal(
+        str(current_app.config.get("CAPTAIN_MAX_CHANGE_EXEMPT_EGP", 300) or 0)
+    )
+    exempt = min(_wallet_svc.driver_change_held(did), exempt_cap)
     return jsonify({
         "balance_egp": float(_wallet_svc.driver_balance(did)),
         "owed_egp": float(owed),
+        # Customer change inside `owed_egp` that the gate ignores. The captain
+        # still hands it over, but it must not drive the lockout bar — he'd
+        # see it fill while `blocked` stays false and think we were lying.
+        "change_held_egp": float(exempt),
+        "gated_owed_egp": float(max(owed - exempt, Decimal("0.00"))),
         "max_debt_egp": float(cap),
         "blocked": blocked,
         "transactions": [
@@ -351,7 +368,7 @@ def driver_availability():
                 "owed_egp": float(owed),
                 "max_debt_egp": float(cap),
                 "message_ar": (
-                    f"عليك {float(owed):.0f} ج.م عمولة. سدد الاول عشان تشتغل تاني."
+                    f"عليك {float(owed):.0f} ج.م للإدارة. سدد الاول عشان تشتغل تاني."
                 ),
             }), 403
 
@@ -471,6 +488,7 @@ def customer_rides():
     limit = min(int(request.args.get("limit", 20)), 100)
     rides = (
         Ride.query.filter_by(customer_id=cid)
+        .options(joinedload(Ride.driver))
         .order_by(Ride.created_at.desc())
         .limit(limit)
         .all()
@@ -1005,11 +1023,9 @@ def rides_read(ride_id: int):
         return jsonify({"error": "forbidden"}), 403
     # When the caller IS the assigned driver, expose the customer's phone
     # so the captain app can render a tap-to-call button.
-    payload = ride.to_dict(include_customer_contact=(did is not None and ride.driver_id == did))
-    if ride.driver_id:
-        d = db.session.get(Driver, ride.driver_id)
-        payload["driver"] = d.to_dict() if d else None
-    return jsonify(payload)
+    return jsonify(ride.to_dict(
+        include_customer_contact=(did is not None and ride.driver_id == did)
+    ))
 
 
 # ---------- customer cancel ----------
@@ -1523,6 +1539,33 @@ def rides_no_show(ride_id: int):
     return jsonify(ride.to_dict(include_customer_contact=True))
 
 
+# ---------- In-app announcements ----------
+
+@rides_api_bp.get("/announcements")
+@jwt_required()
+def announcements_live():
+    """Announcement cards for the app's home screen.
+
+    Only what is live right now — the app renders whatever comes back, so the
+    time window is enforced here rather than trusted to the client clock.
+    """
+    from app.models.ops import Announcement
+    audience = "driver" if _driver_id_from_jwt() is not None else "customer"
+    now = datetime.utcnow()
+    rows = (
+        Announcement.query
+        .filter(
+            Announcement.audience.in_((audience, "both")),
+            Announcement.starts_at <= now,
+            db.or_(Announcement.ends_at.is_(None), Announcement.ends_at > now),
+        )
+        .order_by(Announcement.starts_at.desc())
+        .limit(5)
+        .all()
+    )
+    return jsonify({"announcements": [a.to_dict() for a in rows]})
+
+
 # ---------- Customer wallet ----------
 
 @rides_api_bp.get("/customer/wallet")
@@ -1546,66 +1589,67 @@ def customer_wallet_get():
     })
 
 
-# ---------- Captain end-of-trip extra charge ----------
+# ---------- Captain gives change as wallet credit ----------
 
-@rides_api_bp.post("/rides/<int:ride_id>/captain-extra")
+@rides_api_bp.post("/rides/<int:ride_id>/credit-change")
 @jwt_required()
-def rides_captain_extra(ride_id: int):
-    """Captain adds a surcharge (5-100 EGP by default) at the end of the trip.
+def rides_credit_change(ride_id: int):
+    """Captain has no change, so the difference goes to the customer's wallet.
 
-    Rides settle in cash, so this just raises what the customer hands over —
-    it must never also touch the wallet or book a pending fee, or the
-    customer would pay the same surcharge twice. The platform takes its
-    normal commission on the extra.
+    Fare 150, customer hands over 200 → the captain credits 50 here, keeps the
+    cash, and the customer spends it on a later ride. No commission is taken:
+    change is not fare.
     """
     did = _driver_id_from_jwt()
     if did is None:
         return jsonify({"error": "driver_token_required"}), 403
-    ride = db.session.get(Ride, ride_id)
+
+    try:
+        amount = Decimal(str((request.json or {}).get("amount_egp") or 0))
+    except (TypeError, ValueError, InvalidOperation):
+        return jsonify({"error": "invalid_amount"}), 400
+    lo = Decimal(str(current_app.config.get("CHANGE_CREDIT_MIN_EGP", 5)))
+    hi = Decimal(str(current_app.config.get("CHANGE_CREDIT_MAX_EGP", 100)))
+    if amount < lo or amount > hi:
+        return jsonify({
+            "error": "amount_out_of_range",
+            "min_egp": float(lo), "max_egp": float(hi),
+        }), 400
+
+    # Lock the row: two taps on a flaky connection must not credit twice.
+    ride = (
+        Ride.query.filter_by(id=ride_id)
+        .with_for_update()
+        .first()
+    )
     if ride is None:
         return jsonify({"error": "not_found"}), 404
     if ride.driver_id != did:
         return jsonify({"error": "not_your_ride"}), 403
-    if ride.status not in ("completed", "started"):
+    if ride.status != "completed":
         return jsonify({"error": "trip_not_finalized"}), 409
+    if Decimal(str(ride.change_credit_egp or 0)) > 0:
+        return jsonify({"error": "already_credited"}), 409
 
-    try:
-        amount = float((request.json or {}).get("amount_egp") or 0)
-    except (TypeError, ValueError):
-        return jsonify({"error": "invalid_amount"}), 400
-    lo = float(current_app.config.get("CAPTAIN_EXTRA_MIN_EGP", 5))
-    hi = float(current_app.config.get("CAPTAIN_EXTRA_MAX_EGP", 100))
-    if amount < lo or amount > hi:
+    window = int(current_app.config.get("CHANGE_CREDIT_WINDOW_MINUTES", 60))
+    if ride.completed_at is None or (
+        datetime.utcnow() - ride.completed_at > timedelta(minutes=window)
+    ):
+        return jsonify({"error": "window_expired", "window_minutes": window}), 409
+
+    # Cash actually changed hands, and there was at least this much of it.
+    # Without this a captain could mint wallet credit on a ride the customer
+    # paid entirely from their existing balance.
+    cash = Decimal(str(ride.cash_due_egp))
+    if cash <= 0 or amount > cash:
         return jsonify({
-            "error": "amount_out_of_range",
-            "min_egp": lo, "max_egp": hi,
+            "error": "exceeds_cash_due", "cash_due_egp": float(cash),
         }), 400
 
-    # Idempotency: refuse to double-charge the same ride.
-    if float(ride.captain_extra_egp or 0) > 0:
-        return jsonify({"error": "already_charged"}), 409
-
-    from decimal import Decimal
-    from app.services.pricing import _commission_rate
-
-    extra = Decimal(str(amount))
-    ride.captain_extra_egp = extra
-    # The platform earns on the surcharge at the same rate as the fare,
-    # otherwise a captain could move fare into "extra" to dodge commission.
-    extra_commission = (extra * Decimal(str(_commission_rate()))).quantize(Decimal("0.01"))
-    ride.commission_egp = Decimal(str(ride.commission_egp or 0)) + extra_commission
-
-    # A completed ride already had its commission posted to the captain's
-    # ledger, so only the delta goes on now. An in-flight ride gets the whole
-    # amount at completion, so posting here would double it.
-    if ride.status == "completed":
-        from app.services import wallet as wallet_svc
-        wallet_svc.post_ride_settlement(ride, extra_commission_egp=extra_commission)
-
+    from app.services import wallet as wallet_svc
+    wallet_svc.record_change_credit(ride, amount)
     db.session.commit()
 
-    # Live update for a customer who still has the trip screen open — the
-    # push below only covers the backgrounded case.
     try:
         from app import socketio
         socketio.emit(
@@ -1615,28 +1659,26 @@ def rides_captain_extra(ride_id: int):
             room=f"customer:{ride.customer_id}",
         )
     except Exception as e:  # noqa: BLE001
-        current_app.logger.warning("captain-extra socket emit failed: %s", e)
+        current_app.logger.warning("credit-change socket emit failed: %s", e)
 
-    # Best-effort notify.
     from app.services import push_notifications as push
     push.send_to_customer(
         ride.customer_id,
-        title="إضافة على رحلتك",
+        title="الباقي اتضاف لمحفظتك",
         body=(
-            f"الكابتن ضاف {amount:.0f} ج.م على رحلتك. "
-            f"الاجمالي بقى {float(ride.total_egp):.0f} ج.م."
+            f"الكابتن ضاف {float(amount):.0f} ج.م لمحفظتك. "
+            "تقدر تستخدمها في اي رحلة جاية."
         ),
-        data={"kind": "captain_extra_added", "ride_id": ride.id,
-              "amount_egp": str(amount),
-              "total_egp": str(float(ride.total_egp))},
+        data={"kind": "change_credited", "ride_id": ride.id,
+              "amount_egp": str(float(amount))},
         collapse_key=f"ride:{ride.id}",
     )
 
     return jsonify({
         "ok": True,
-        "amount_egp": amount,
-        "total_egp": float(ride.total_egp),
-        "net_egp": float(ride.net_egp),
+        "amount_egp": float(amount),
+        "cash_due_egp": float(ride.cash_due_egp),
+        "customer_balance_egp": float(wallet_svc.get_balance(ride.customer_id)),
         "ride": ride.to_dict(include_customer_contact=True),
     })
 

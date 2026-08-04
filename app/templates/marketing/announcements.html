@@ -4,8 +4,8 @@
 <div class="p-6 max-w-4xl mx-auto space-y-6">
   <div class="flex items-center justify-between">
     <div>
-      <h1 class="text-2xl font-bold">📢 إعلانات داخل التطبيق</h1>
-      <p class="text-text-muted text-sm">بتظهر فوق شاشة العميل أو الكابتن في التطبيق.</p>
+      <h1 class="text-2xl font-bold">📢 إعلانات واشعارات</h1>
+      <p class="text-text-muted text-sm">الإعلان بيظهر كارت في التطبيق. الاشعار بيوصل على الموبايل.</p>
     </div>
     <a href="{{ url_for('marketing.index') }}" class="btn-ghost">← حملات الواتساب</a>
   </div>
@@ -16,9 +16,9 @@
       <div>
         <label class="block text-xs mb-1 text-white/80">مين هيشوفه</label>
         <select name="audience" class="input">
-          <option value="both">التطبيقين</option>
           <option value="customer">العملاء بس</option>
           <option value="driver">الكباتن بس</option>
+          <option value="both">التطبيقين</option>
         </select>
       </div>
       <div>
@@ -31,18 +31,53 @@
       </div>
       <div class="col-span-2">
         <label class="block text-xs mb-1 text-white/80">العنوان</label>
-        <input name="title_ar" class="input" placeholder="مثال: مفيش عربية دلوقتي عشان الأمطار" />
+        <input name="title_ar" class="input" required placeholder="مثال: خصم ١٠٪ على كل الرحلات النهاردة" />
       </div>
       <div class="col-span-2">
         <label class="block text-xs mb-1 text-white/80">التفاصيل</label>
         <textarea name="body_ar" class="input" rows="2"></textarea>
       </div>
       <div>
-        <label class="block text-xs mb-1 text-white/80">ينتهي بعد كام ساعة (سيبها فاضية = دايماً)</label>
-        <input name="ends_in_hours" type="number" class="input" placeholder="٦" />
+        <label class="block text-xs mb-1 text-white/80">يبدأ من (سيبها فاضية = دلوقتي)</label>
+        <input name="starts_at" type="datetime-local" class="input" />
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">ينتهي في (سيبها فاضية = دايماً)</label>
+        <input name="ends_at" type="datetime-local" class="input" />
+      </div>
+      <div class="col-span-2 flex items-center gap-2">
+        <input id="also_push" name="also_push" type="checkbox" value="1" class="w-4 h-4" />
+        <label for="also_push" class="text-sm">ابعت كمان اشعار على الموبايل دلوقتي</label>
       </div>
       <div class="col-span-2">
         <button class="btn-primary">انشر</button>
+      </div>
+    </form>
+    <p class="text-xs text-text-muted mt-3">المواعيد بتوقيت UTC — نفس التوقيت اللي باقي الداشبورد بيعرضه.</p>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">اشعار مباشر</h2>
+    <p class="text-text-muted text-sm mb-3">من غير كارت في التطبيق — بيوصل على الموبايل وخلاص.</p>
+    <form method="post" action="{{ url_for('marketing.send_push') }}" class="grid grid-cols-2 gap-4">
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">مين يستقبله</label>
+        <select name="audience" class="input">
+          <option value="customer">العملاء بس</option>
+          <option value="driver">الكباتن بس</option>
+          <option value="both">الاتنين</option>
+        </select>
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">العنوان</label>
+        <input name="title" class="input" required maxlength="60" />
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">النص</label>
+        <textarea name="body" class="input" rows="2" required maxlength="200"></textarea>
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">ابعت الاشعار</button>
       </div>
     </form>
   </div>
@@ -53,29 +88,43 @@
         <tr>
           <th class="text-right px-4 py-3">#</th>
           <th class="text-right px-4 py-3">مين</th>
-          <th class="text-right px-4 py-3">الأهمية</th>
+          <th class="text-right px-4 py-3">الحالة</th>
           <th class="text-right px-4 py-3">العنوان</th>
-          <th class="text-right px-4 py-3">شغال لحد</th>
+          <th class="text-right px-4 py-3">من</th>
+          <th class="text-right px-4 py-3">لحد</th>
+          <th class="text-right px-4 py-3"></th>
         </tr>
       </thead>
       <tbody>
         {% set aud_ar = {'both':'الاتنين','customer':'العملاء','driver':'الكباتن'} %}
-        {% set pri_ar = {'info':'عادي','warning':'تحذير','critical':'مهم'} %}
         {% for a in announcements %}
           <tr class="border-t border-white/5">
             <td class="px-4 py-3 text-text-muted">#{{ a.id }}</td>
             <td class="px-4 py-3">{{ aud_ar.get(a.audience, a.audience) }}</td>
             <td class="px-4 py-3">
-              {% set color = {'info':'text-primary','warning':'text-warning','critical':'text-red-300'}.get(a.priority) %}
-              <span class="{{ color }}">{{ pri_ar.get(a.priority, a.priority) }}</span>
+              {% if a.is_live %}
+                <span class="text-success">شغال</span>
+              {% elif a.starts_at and a.starts_at > now %}
+                <span class="text-warning">لسه مبدأش</span>
+              {% else %}
+                <span class="text-text-muted">خلص</span>
+              {% endif %}
             </td>
             <td class="px-4 py-3">{{ a.title_ar or '—' }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ a.starts_at.strftime('%H:%M · %d %b') if a.starts_at else '—' }}</td>
             <td class="px-4 py-3 text-text-muted">
               {% if a.ends_at %}{{ a.ends_at.strftime('%H:%M · %d %b') }}{% else %}دايماً{% endif %}
             </td>
+            <td class="px-4 py-3">
+              {% if a.is_live %}
+                <form method="post" action="{{ url_for('marketing.end_announcement', ann_id=a.id) }}">
+                  <button class="btn-ghost text-xs">وقّفه</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
         {% else %}
-          <tr><td colspan="5" class="px-4 py-8 text-center text-text-muted">مفيش إعلانات.</td></tr>
+          <tr><td colspan="7" class="px-4 py-8 text-center text-text-muted">مفيش إعلانات.</td></tr>
         {% endfor %}
       </tbody>
     </table>

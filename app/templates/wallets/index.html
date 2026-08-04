@@ -12,6 +12,11 @@
   <div class="card">
     <p class="text-text-muted text-sm">إجمالي المستحق على الكباتن</p>
     <p class="text-3xl font-bold text-primary">{{ '%.0f'|format(total_owed) }} ج.م</p>
+    {% if total_change_held and total_change_held > 0 %}
+      <p class="text-success text-xs mt-1">
+        منه {{ '%.0f'|format(total_change_held) }} ج.م باقي عملاء اتحط في محافظهم، والباقي عمولة.
+      </p>
+    {% endif %}
   </div>
 
   <section>
@@ -24,6 +29,7 @@
               <th class="text-right px-4 py-3">الكابتن</th>
               <th class="text-right px-4 py-3">الرقم</th>
               <th class="text-right px-4 py-3">المستحق</th>
+              <th class="text-right px-4 py-3">منه باقي عملاء</th>
               <th class="text-right px-4 py-3">تحصيل</th>
             </tr>
           </thead>
@@ -33,8 +39,12 @@
                 <td class="px-4 py-3">
                   <a href="{{ url_for('drivers.show', driver_id=d.id) }}" class="hover:text-primary">{{ d.name }}</a>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.phone }}</td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.wa_id }}</td>
                 <td class="px-4 py-3 font-bold text-danger">{{ '%.0f'|format(w.owed_egp) }} ج.م</td>
+                <td class="px-4 py-3 text-success">
+                  {% set held = change_held.get(d.id, 0) %}
+                  {{ '%.0f'|format(held) }} ج.م
+                </td>
                 <td class="px-4 py-3">
                   <form method="post" action="{{ url_for('wallets.driver_settle', driver_id=d.id) }}" class="flex gap-2">
                     <input name="amount_egp" type="number" step="0.01" min="0.01"
@@ -73,7 +83,7 @@
                 <td class="px-4 py-3">
                   <a href="{{ url_for('drivers.show', driver_id=d.id) }}" class="hover:text-primary">{{ d.name }}</a>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.phone }}</td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ d.wa_id }}</td>
                 <td class="px-4 py-3 font-bold text-success">{{ '%.0f'|format(w.balance_egp) }} ج.م</td>
                 <td class="px-4 py-3">
                   <form method="post" action="{{ url_for('wallets.driver_payout', driver_id=d.id) }}" class="flex gap-2">
@@ -114,7 +124,7 @@
                 <td class="px-4 py-3">
                   <a href="{{ url_for('customers.show', customer_id=c.id) }}" class="hover:text-primary">{{ c.name or 'عميل' }}</a>
                 </td>
-                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ c.phone }}</td>
+                <td class="px-4 py-3 font-mono text-xs" dir="ltr">{{ c.wa_id }}</td>
                 <td class="px-4 py-3 font-bold text-success">{{ '%.0f'|format(w.balance_egp) }} ج.م</td>
                 <td class="px-4 py-3">
                   <form method="post" action="{{ url_for('wallets.customer_adjust', customer_id=c.id) }}" class="flex gap-2">

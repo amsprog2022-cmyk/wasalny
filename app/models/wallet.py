@@ -47,7 +47,11 @@ class CustomerWallet(db.Model):
 
 # Reasons a wallet moves. Kept as a small closed set so the admin
 # dashboard can group by them later without free-text drift.
-TXN_REASONS = ("topup", "ride_charge", "refund", "captain_extra", "admin_adjust")
+TXN_REASONS = (
+    "topup", "ride_charge", "refund", "captain_extra", "admin_adjust",
+    # credit; the captain had no change, so the difference went here.
+    "captain_change",
+)
 TXN_DIRECTIONS = ("credit", "debit")
 
 # Driver-side reasons.
@@ -56,8 +60,11 @@ TXN_DIRECTIONS = ("credit", "debit")
 #                   discount covered more than our commission).
 #   settlement    — credit; the captain handed cash to an admin.
 #   payout        — debit; we paid the captain what we owed him.
+#   customer_credit — debit; he kept the customer's change and we parked it
+#                   in their wallet, so he now holds cash that isn't his.
 DRIVER_TXN_REASONS = (
     "commission", "trip_earning", "settlement", "payout", "admin_adjust",
+    "customer_credit",
 )
 
 

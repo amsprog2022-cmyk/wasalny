@@ -150,13 +150,78 @@ def driver_owed(driver_id: int) -> Decimal:
     return -bal if bal < 0 else Decimal("0.00")
 
 
+def driver_change_held(driver_id: int) -> Decimal:
+    """Customer change the captain is still holding since his last settlement.
+
+    Sits in the same ledger as commission but must not count toward the debt
+    gate: a captain who does the right thing six times over would otherwise be
+    locked offline for it.
+    """
+    last_settlement = (
+        DriverWalletTransaction.query
+        .filter_by(driver_id=driver_id, reason="settlement")
+        .order_by(DriverWalletTransaction.id.desc())
+        .first()
+    )
+    q = DriverWalletTransaction.query.filter_by(
+        driver_id=driver_id, reason="customer_credit", direction="debit",
+    )
+    if last_settlement is not None:
+        q = q.filter(DriverWalletTransaction.id > last_settlement.id)
+    total = sum((Decimal(str(t.amount_egp)) for t in q.all()), Decimal("0.00"))
+    return total
+
+
+def driver_change_held_bulk(driver_ids: list[int]) -> dict[int, Decimal]:
+    """`driver_change_held` for many captains in one round trip.
+
+    The admin money desk lists every captain in debt; calling the per-driver
+    helper in a loop is two queries each and turns one page load into
+    hundreds.
+    """
+    if not driver_ids:
+        return {}
+    from sqlalchemy import func
+
+    T = DriverWalletTransaction
+    last_settlement = (
+        db.session.query(T.driver_id, func.max(T.id).label("last_id"))
+        .filter(T.driver_id.in_(driver_ids), T.reason == "settlement")
+        .group_by(T.driver_id)
+        .subquery()
+    )
+    rows = (
+        db.session.query(T.driver_id, func.sum(T.amount_egp))
+        .outerjoin(last_settlement, last_settlement.c.driver_id == T.driver_id)
+        .filter(
+            T.driver_id.in_(driver_ids),
+            T.reason == "customer_credit",
+            T.direction == "debit",
+            (last_settlement.c.last_id.is_(None)) | (T.id > last_settlement.c.last_id),
+        )
+        .group_by(T.driver_id)
+        .all()
+    )
+    return {did: Decimal(str(total or 0)) for did, total in rows}
+
+
 def driver_debt_block(driver_id: int) -> tuple[bool, Decimal, Decimal]:
-    """`(blocked, owed, cap)` — a captain carrying too much unpaid commission
-    can't go online until he settles. Cap of 0 disables the gate."""
+    """`(blocked, owed, cap)` — a captain carrying too much unpaid debt can't go
+    online until he settles. Cap of 0 disables the gate.
+
+    Change he parked in customers' wallets is exempt up to a ceiling of its own:
+    unlimited exemption would let a captain and a friendly customer recycle cash
+    through the wallet forever without ever settling.
+    """
     from flask import current_app
     cap = Decimal(str(current_app.config.get("CAPTAIN_MAX_DEBT_EGP", 300) or 0))
+    exempt_cap = Decimal(
+        str(current_app.config.get("CAPTAIN_MAX_CHANGE_EXEMPT_EGP", 300) or 0)
+    )
     owed = driver_owed(driver_id)
-    return (cap > 0 and owed >= cap), owed, cap
+    exempt = min(driver_change_held(driver_id), exempt_cap)
+    gated = owed - exempt
+    return (cap > 0 and gated >= cap), owed, cap
 
 
 def settle_driver_cash(
@@ -253,7 +318,36 @@ def apply_ride_credit(ride) -> Decimal:
     return use
 
 
-def post_ride_settlement(ride, *, extra_commission_egp=None) -> None:
+def record_change_credit(ride, amount_egp) -> Decimal:
+    """The captain had no change, so the difference goes to the customer's
+    wallet and he hands over nothing.
+
+    Two postings that cancel out over time: the customer gains credit, the
+    captain is debited because he is holding cash that is not his. When the
+    customer later spends it, `apply_ride_credit` pushes that ride's
+    `cash_due` below `net`, and `post_ride_settlement` credits the second
+    captain the same amount back.
+
+    No commission is taken — this is not fare, it is change.
+    """
+    amount = Decimal(str(amount_egp))
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    if ride.driver_id is None:
+        raise ValueError("ride has no driver")
+    credit(
+        ride.customer_id, amount, reason="captain_change",
+        ride_id=ride.id, note=f"باقي رحلة #{ride.id}",
+    )
+    driver_debit(
+        ride.driver_id, amount, reason="customer_credit",
+        ride_id=ride.id, note=f"باقي العميل رحلة #{ride.id}",
+    )
+    ride.change_credit_egp = amount
+    return amount
+
+
+def post_ride_settlement(ride) -> None:
     """Move a finished ride's money onto the captain's ledger.
 
     Every ride is cash, so the captain physically holds `cash_due_egp` and
@@ -262,22 +356,18 @@ def post_ride_settlement(ride, *, extra_commission_egp=None) -> None:
     covered more than our cut he collected less than his net and *we* owe
     *him* the shortfall.
 
-    `extra_commission_egp` posts only the delta, for when a captain adds a
-    surcharge after the ride's commission was already booked.
+    Change parked in the customer's wallet is excluded here even though the
+    captain did collect it: `record_change_credit` already posted it as its
+    own `customer_credit` debit. Counting it again — `cash_due_egp` includes
+    it — would charge him the change twice.
     """
     if ride.driver_id is None:
         return
 
-    if extra_commission_egp is not None:
-        amount = Decimal(str(extra_commission_egp))
-        if amount > 0:
-            driver_debit(
-                ride.driver_id, amount, reason="commission",
-                ride_id=ride.id, note=f"عمولة إضافة رحلة #{ride.id}",
-            )
-        return
-
-    owed = Decimal(str(ride.cash_due_egp)) - Decimal(str(ride.net_egp))
+    collected = (
+        Decimal(str(ride.cash_due_egp)) - Decimal(str(ride.change_credit_egp or 0))
+    )
+    owed = collected - Decimal(str(ride.net_egp))
     if owed > 0:
         driver_debit(
             ride.driver_id, owed, reason="commission",

@@ -12,6 +12,7 @@ from app.models.customer import Customer
 from app.models.ride import Ride
 from app.models.ops import AdminBroadcast, Announcement
 from app.services import audit
+from app.services import push_notifications as push
 
 
 marketing_bp = Blueprint("marketing", __name__, url_prefix="/marketing")
@@ -121,35 +122,147 @@ def send(broadcast_id: int):
 
 # ---------- Announcements ----------
 
+ANNOUNCEMENT_AUDIENCES = ("customer", "driver", "both")
+ANNOUNCEMENT_PRIORITIES = ("info", "warning", "critical")
+
+
+def _parse_local(value: str | None) -> datetime | None:
+    """Read a browser `datetime-local` value. Everything else in the app
+    stores naive UTC, so the admin is entering UTC too."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M")
+    except ValueError:
+        return None
+
+
 @marketing_bp.route("/announcements")
 @login_required
 def announcements():
     rows = Announcement.query.order_by(Announcement.starts_at.desc()).limit(50).all()
-    return render_template("marketing/announcements.html", announcements=rows)
+    return render_template(
+        "marketing/announcements.html",
+        announcements=rows,
+        now=datetime.utcnow(),
+    )
 
 
 @marketing_bp.route("/announcements/new", methods=["POST"])
 @login_required
 def new_announcement():
     if not current_user.is_admin:
-        flash("Admins only.", "error")
+        flash("للمدير فقط.", "error")
         return redirect(url_for("marketing.announcements"))
+
+    title_ar = (request.form.get("title_ar") or "").strip()
+    body_ar = (request.form.get("body_ar") or "").strip()
+    if not title_ar:
+        flash("لازم تكتب عنوان الإعلان.", "error")
+        return redirect(url_for("marketing.announcements"))
+
+    audience = request.form.get("audience", "customer")
+    priority = request.form.get("priority", "info")
+    if audience not in ANNOUNCEMENT_AUDIENCES or priority not in ANNOUNCEMENT_PRIORITIES:
+        flash("اختيار غير صحيح.", "error")
+        return redirect(url_for("marketing.announcements"))
+
+    # A `datetime-local` the browser rejected arrives empty; a malformed one
+    # parses to None, which would mean "never expires" — a permanent card
+    # nobody meant to publish. Refuse rather than guess.
+    raw_ends = (request.form.get("ends_at") or "").strip()
+    ends_at = _parse_local(raw_ends)
+    if raw_ends and ends_at is None:
+        flash("وقت النهاية مش مفهوم.", "error")
+        return redirect(url_for("marketing.announcements"))
+
     a = Announcement(
-        audience=request.form.get("audience", "both"),
-        title_ar=request.form.get("title_ar"),
-        body_ar=request.form.get("body_ar"),
-        priority=request.form.get("priority", "info"),
+        audience=audience,
+        title_ar=title_ar,
+        body_ar=body_ar or None,
+        priority=priority,
         created_by_user_id=current_user.id,
     )
-    ends_in_hours = request.form.get("ends_in_hours")
-    if ends_in_hours:
-        try:
-            a.ends_at = datetime.utcnow() + timedelta(hours=int(ends_in_hours))
-        except ValueError:
-            pass
+    a.starts_at = _parse_local(request.form.get("starts_at")) or datetime.utcnow()
+    a.ends_at = ends_at
+    if a.ends_at is not None and a.ends_at <= a.starts_at:
+        flash("وقت النهاية لازم يكون بعد وقت البداية.", "error")
+        return redirect(url_for("marketing.announcements"))
+
     db.session.add(a)
     db.session.flush()
-    audit.record("announcement.create", target_kind="announcement", target_id=a.id)
+    audit.record(
+        "announcement.create", target_kind="announcement", target_id=a.id,
+        after={"audience": a.audience, "title": a.title_ar},
+    )
     db.session.commit()
-    flash("Announcement live.", "success")
+
+    msg = "الإعلان اتنشر."
+    if request.form.get("also_push"):
+        counts = push.broadcast_push(
+            a.audience, title=title_ar, body=body_ar or title_ar,
+            data={"kind": "announcement", "announcement_id": a.id},
+        )
+        audit.record(
+            "announcement.push", target_kind="announcement", target_id=a.id,
+            after=counts,
+        )
+        db.session.commit()
+        msg += f" واتبعت اشعار لـ {counts['customers']} عميل و {counts['drivers']} كابتن."
+    flash(msg, "success")
+    return redirect(url_for("marketing.announcements"))
+
+
+@marketing_bp.route("/announcements/<int:ann_id>/end", methods=["POST"])
+@login_required
+def end_announcement(ann_id: int):
+    """Pull a live announcement down now. Kept rather than deleted so the
+    audit trail still shows what customers were shown and when."""
+    if not current_user.is_admin:
+        flash("للمدير فقط.", "error")
+        return redirect(url_for("marketing.announcements"))
+    a = Announcement.query.get_or_404(ann_id)
+    now = datetime.utcnow()
+    if a.ends_at is not None and a.ends_at <= now:
+        flash("الإعلان ده خلص خلاص.", "error")
+        return redirect(url_for("marketing.announcements"))
+    # Cancelling one that has not started yet must not leave ends_at before
+    # starts_at — an impossible window the liveness check reads as dead but
+    # every report would have to special-case.
+    a.ends_at = max(now, a.starts_at)
+    audit.record("announcement.end", target_kind="announcement", target_id=a.id)
+    db.session.commit()
+    flash("الإعلان اتوقف.", "success")
+    return redirect(url_for("marketing.announcements"))
+
+
+# ---------- Direct push to the apps ----------
+
+@marketing_bp.route("/push", methods=["POST"])
+@login_required
+def send_push():
+    """One-off notification with no announcement card behind it."""
+    if not current_user.is_admin:
+        flash("للمدير فقط.", "error")
+        return redirect(url_for("marketing.announcements"))
+
+    audience = request.form.get("audience", "customer")
+    title = (request.form.get("title") or "").strip()
+    body = (request.form.get("body") or "").strip()
+    if not title or not body:
+        flash("لازم تكتب عنوان ونص الاشعار.", "error")
+        return redirect(url_for("marketing.announcements"))
+
+    counts = push.broadcast_push(
+        audience, title=title, body=body, data={"kind": "admin_message"},
+    )
+    audit.record(
+        "push.broadcast", target_kind="push", target_id=None,
+        after={"audience": audience, "title": title, **counts},
+    )
+    db.session.commit()
+    flash(
+        f"الاشعار اتبعت لـ {counts['customers']} عميل و {counts['drivers']} كابتن.",
+        "success",
+    )
     return redirect(url_for("marketing.announcements"))
