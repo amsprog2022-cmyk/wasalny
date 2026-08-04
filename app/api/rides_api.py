@@ -637,9 +637,11 @@ def verify_start():
 
     if purpose == "customer_register":
         existing = Customer.query.filter_by(wa_id=wa_id).first()
-        if existing is not None and existing.deleted_at is not None:
-            return jsonify({"error": "account_deleted"}), 403
-        if existing is not None and existing.password_hash:
+        # A soft-deleted row must not block re-registration — the whole
+        # point of soft-delete is that ride history stays while PII goes.
+        # /customer/register will undelete + reattach the new password
+        # once the ticket clears.
+        if existing is not None and existing.password_hash and existing.deleted_at is None:
             return jsonify({"error": "phone_already_registered"}), 409
     elif purpose == "customer_reset":
         existing = Customer.query.filter_by(wa_id=wa_id).first()
@@ -717,19 +719,22 @@ def customer_register():
 
     existing = Customer.query.filter_by(wa_id=wa_id).first()
     if existing is not None:
-        if existing.deleted_at is not None:
-            return jsonify({"error": "account_deleted"}), 403
-        # Legacy WhatsApp-only customer (booked before the app existed):
-        # they have a Customer row for ride history but no password. Treat
-        # register as an upgrade — attach the name + password, keep the
-        # ride history, and log them in. Ticket is required so a stranger
-        # can't hijack the number.
-        if not existing.password_hash:
+        # Two cases we treat as an upgrade / undelete rather than a block,
+        # both gated on a valid WhatsApp ticket so a stranger can't hijack:
+        #   1. Legacy WhatsApp-only customer (booked before the app existed)
+        #      with no password — attach name + password to the same row.
+        #   2. Soft-deleted account — undelete, wipe the sentinel name/
+        #      opted_in/fcm, and let them start fresh. Ride history stays.
+        needs_upgrade = not existing.password_hash or existing.deleted_at is not None
+        if needs_upgrade:
             if not ticket:
                 return jsonify({"error": "verification_required"}), 403
             existing.name = name
             existing.set_password(password)
             existing.phone_verified_at = verified_at
+            existing.deleted_at = None
+            existing.fcm_token = None
+            existing.opted_in = True
             db.session.commit()
             return jsonify({
                 "access_token": _issue_customer_token(existing),
