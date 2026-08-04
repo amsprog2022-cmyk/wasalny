@@ -1,7 +1,6 @@
 {% extends "layout/base.html" %}
 {% block title %}خريطة مباشرة · وصلني بنها{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
   /* Full-bleed map + sidebar layout that fills the viewport below the nav. */
   .live-map-wrap {
@@ -13,7 +12,10 @@
   @media (max-width: 900px) {
     .live-map-wrap { grid-template-columns: 1fr; grid-template-rows: 60vh 1fr; }
   }
-  #live-map { width: 100%; height: 100%; }
+  /* Google Maps injects its own DOM into the map container, so the map gets
+     a dedicated div and the floating overlays are siblings inside the stage. */
+  .live-map-stage { position: relative; overflow: hidden; }
+  #live-map { width: 100%; height: 100%; background: #14141c; }
   .live-map-sidebar {
     background: #14141c;
     border-left: 1px solid rgba(255,255,255,0.05);
@@ -97,9 +99,15 @@
   /* Backward compat with any cached legacy class name. */
   .captain-marker { display: none; }
 
-  /* Floating place-search box overlaid on top-left of the map */
+  /* AdvancedMarkerElement pins the bottom-centre of its content to the
+     coordinate. The round pins below want their centre there instead, so
+     push them down by half their height. */
+  .center-pin { transform: translateY(50%); cursor: default; }
+
+  /* Floating place-search box overlaid on top-left of the map. Google keeps
+     its zoom control bottom-right, so nothing sits under this corner. */
   .place-search-wrap {
-    position: absolute; top: 12px; left: 60px; z-index: 5;
+    position: absolute; top: 12px; left: 12px; z-index: 5;
     background: rgba(20, 20, 28, 0.95);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 10px;
@@ -284,7 +292,8 @@
 </style>
 
 <div class="live-map-wrap">
-  <div id="live-map" style="position: relative;">
+  <div class="live-map-stage">
+    <div id="live-map"></div>
     {# Floating overlay: place search #}
     <div class="place-search-wrap">
       <input id="place-search-input" type="text" placeholder="🔍 ابحث عن مكان على الخريطة…" autocomplete="off" />
@@ -391,14 +400,28 @@
 </div>
 
 <script>
-  // Server-injected settings — read once at page load. The key restriction
-  // (bundle IDs on the MapTiler dashboard) protects against extraction.
+  // Server-injected settings — read once at page load. The browser key is
+  // safe here only because it is HTTP-referrer restricted in Cloud Console;
+  // the Map ID is not a secret at all.
   window.WASSALNY = {
-    maptilerKey: {{ maptiler_key | tojson }},
-    benhaCenter: [31.1836, 30.4560],   // [lng, lat] — MapLibre order
+    mapId: {{ google_maps_map_id | tojson }},
+    benhaCenter: { lat: 30.4560, lng: 31.1836 },
   };
 </script>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+{# live_map.js defines window.initLiveMap; the Google loader calls it once the
+   SDK is ready. It must load first, hence the async attribute below. #}
 <script src="{{ url_for('static', filename='js/live_map.js') }}"></script>
+{% if google_maps_key %}
+<script async
+  src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_key | urlencode }}&libraries=marker&v=weekly&loading=async&language=ar&region=EG&callback=initLiveMap"></script>
+{% else %}
+<script>
+  document.getElementById('live-map').innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:center;height:100%;'
+    + 'color:#9aa0aa;font-size:13px;text-align:center;padding:24px;">'
+    + 'مفتاح خرائط جوجل مش متظبط على السيرفر. ظبط GOOGLE_MAPS_BROWSER_KEY و GOOGLE_MAPS_MAP_ID.'
+    + '</div>';
+</script>
+{% endif %}
 {% endblock %}

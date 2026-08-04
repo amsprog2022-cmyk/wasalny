@@ -1,6 +1,6 @@
 """Live map — real-time view of every online captain in Benha.
 
-Renders a MapLibre map that streams captain positions via the existing
+Renders a Google Maps view that streams captain positions via the existing
 /inbox Socket.IO namespace. The GET /live-map/data endpoint returns the
 current snapshot at page-load; sockets take over from there.
 
@@ -22,11 +22,12 @@ live_map_bp = Blueprint("live_map", __name__, url_prefix="/live-map")
 @live_map_bp.route("/")
 @login_required
 def index():
-    """Render the map page. MapTiler key is injected into the template so
-    the browser can build the tile-server URL without a second request."""
+    """Render the map page. The browser key and Map ID are injected into the
+    template so the Google Maps loader can boot without a second request."""
     return render_template(
         "live_map/index.html",
-        maptiler_key=current_app.config.get("MAPTILER_KEY", ""),
+        google_maps_key=current_app.config.get("GOOGLE_MAPS_BROWSER_KEY", ""),
+        google_maps_map_id=current_app.config.get("GOOGLE_MAPS_MAP_ID", ""),
     )
 
 
@@ -125,6 +126,21 @@ def search_places():
     if len(q) < 3:
         return jsonify([])
     return jsonify(rg.search_places(q, limit=6))
+
+
+@live_map_bp.route("/place-name")
+@login_required
+def place_name():
+    """Admin-session reverse geocoder for map-click pins. The customer app's
+    /api/v1/rides/place-name is @jwt_required, so an admin session cookie gets
+    a 401 there and every pin silently degraded to raw coordinates."""
+    from app.services import reverse_geocode as rg
+    try:
+        lat = float(request.args.get("lat"))
+        lng = float(request.args.get("lng"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat/lng required"}), 400
+    return jsonify({"label": rg.resolve_place_name(lat, lng)})
 
 
 @live_map_bp.route("/nearest-captains")

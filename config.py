@@ -40,11 +40,17 @@ class Config:
     # Nearest-N radius used by matching (phase 2 onwards).
     GEO_SEARCH_RADIUS_KM = float(os.getenv("GEO_SEARCH_RADIUS_KM", "5"))
 
-    # Map tiles — MapTiler free tier (100k loads/month) is enough for both
-    # the admin live map and the captain/customer app maps at current scale.
-    # Same key baked into the captain app; can rotate via env var without a
-    # code change if it ever leaks.
-    MAPTILER_KEY = os.getenv("MAPTILER_KEY", "parhG5kKaSBCSzASEX3O")
+    # Google Maps. No defaults on purpose — this repo is public, so an
+    # unset key must degrade to a broken map rather than leak a working one.
+    #
+    # BROWSER_KEY is HTTP-referrer restricted and ships to the browser on the
+    # live-map page. MAP_ID is not a secret; AdvancedMarkerElement refuses to
+    # render without one, and it also carries the cloud-side dark style.
+    # SERVER_KEY is unrestricted by application (Railway has no static egress
+    # IP) so it is a real secret — env var only, capped by per-SKU daily quota.
+    GOOGLE_MAPS_BROWSER_KEY = os.getenv("GOOGLE_MAPS_BROWSER_KEY", "")
+    GOOGLE_MAPS_MAP_ID      = os.getenv("GOOGLE_MAPS_MAP_ID", "")
+    GOOGLE_MAPS_SERVER_KEY  = os.getenv("GOOGLE_MAPS_SERVER_KEY", "")
 
     # Distance-based pricing (Phase 2 customer app). Straight-line Haversine
     # for now — captain can override on arrival for edge cases.

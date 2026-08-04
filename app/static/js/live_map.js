@@ -9,44 +9,44 @@
 //        ride_lifecycle_update     — update the sidebar rides list
 //
 // State lives in two Maps (driverId → marker, rideId → row) so upserts are O(1).
-(function () {
-  const { benhaCenter } = window.WASSALNY || { benhaCenter: [31.1836, 30.4560] };
+//
+// Entry point is window.initLiveMap, invoked by the Google Maps loader's
+// &callback= once the SDK is ready — nothing below can run before that.
+window.initLiveMap = function () {
+  const { benhaCenter, mapId } = window.WASSALNY || {};
+  const center = benhaCenter || { lat: 30.4560, lng: 31.1836 };
 
   // -------- state --------
-  const markers = new Map();   // driver_id -> maplibregl.Marker
+  const markers = new Map();   // driver_id -> AdvancedMarkerElement
   const captains = new Map();  // driver_id -> {lat, lng, available, on_trip_ride_id, name}
   const rides = new Map();     // ride_id -> ride payload
 
   // -------- map --------
-  // Use raster OSM tiles — free, no API key, no HTTP-referrer allowlist to
-  // maintain. Same reasoning as the Flutter captain app: reliability > fancy
-  // vector tiles.
-  const map = new maplibregl.Map({
-    container: 'live-map',
-    style: {
-      version: 8,
-      sources: {
-        osm: {
-          type: 'raster',
-          tiles: [
-            'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
-            'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
-            'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png',
-          ],
-          tileSize: 256,
-          minzoom: 0,
-          maxzoom: 19,
-          attribution: '© OpenStreetMap contributors',
-        },
-      },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }],
-    },
-    center: benhaCenter,
+  // mapId is required: AdvancedMarkerElement silently refuses to render
+  // without one, and every marker on this page is custom HTML. It also
+  // carries the dark style, so there is no `styles` array here.
+  const AdvancedMarker = google.maps.marker.AdvancedMarkerElement;
+  const map = new google.maps.Map(document.getElementById('live-map'), {
+    center,
     zoom: 12,
-    attributionControl: true,
+    mapId: mapId || undefined,
+    mapTypeControl: false,
+    streetViewControl: false,
+    // The "+ رحلة جديدة" FAB sits top-right, where the fullscreen button
+    // would otherwise land.
+    fullscreenControl: false,
+    zoomControl: true,
+    // One-finger / no-modifier panning — an ops console is dragged constantly.
+    gestureHandling: 'greedy',
+    clickableIcons: false,
   });
 
-  map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), 'top-left');
+  // -------- camera helpers --------
+  function panTo(lat, lng, zoom) {
+    if (lat == null || lng == null) return;
+    map.panTo({ lat: lat, lng: lng });
+    if (zoom != null) map.setZoom(zoom);
+  }
 
   // -------- helpers --------
   function _capKey(cap) {
@@ -84,12 +84,12 @@
 
     const existing = markers.get(id);
     if (existing) {
-      const wrap = existing.getElement();
+      const wrap = existing.content;
       wrap.title = titleText;
       wrap.querySelector('.captain-label').textContent = nameText;
       const dot = wrap.querySelector('.captain-dot');
       dot.className = 'captain-dot ' + stateCls;
-      existing.setLngLat([merged.lng, merged.lat]);
+      existing.position = { lat: merged.lat, lng: merged.lng };
       renderCaptainList();
       return;
     }
@@ -101,13 +101,21 @@
       <div class="captain-label">${nameText}</div>
       <div class="captain-dot ${stateCls}"></div>
     `;
-    const marker = new maplibregl.Marker({ element: wrap, anchor: 'bottom' })
-      .setLngLat([merged.lng, merged.lat])
-      .addTo(map);
-    // Clicking a captain: fly to them AND open the "assign a pending trip"
-    // modal so the admin can dispatch in one flow.
-    wrap.addEventListener('click', () => {
-      map.flyTo({ center: [merged.lng, merged.lat], zoom: 15, duration: 600 });
+    const marker = new AdvancedMarker({
+      map: map,
+      position: { lat: merged.lat, lng: merged.lng },
+      content: wrap,
+    });
+    // Clicking a captain: pan to them AND open the "assign a pending trip"
+    // modal so the admin can dispatch in one flow. Read the position from
+    // `captains` rather than the closure — `merged` is replaced on every
+    // position update, so closing over it would pan to a stale point.
+    wrap.addEventListener('click', (ev) => {
+      // Without this the click also reaches the map, which would consume it
+      // as a pickup/dropoff pin while the create-ride modal is in click mode.
+      ev.stopPropagation();
+      const cur = captains.get(id);
+      if (cur) panTo(cur.lat, cur.lng, 15);
       openAssignAlertModal(id);
     });
     markers.set(id, marker);
@@ -116,7 +124,7 @@
 
   function removeMarker(driverId) {
     const m = markers.get(driverId);
-    if (m) { m.remove(); markers.delete(driverId); }
+    if (m) { m.map = null; markers.delete(driverId); }
     captains.delete(driverId);
     updateCounts();
     renderCaptainList();
@@ -165,9 +173,7 @@
       btn.addEventListener('click', () => {
         const did = parseInt(btn.getAttribute('data-driver-id'), 10);
         const cap = captains.get(did);
-        if (cap) {
-          map.flyTo({ center: [cap.lng, cap.lat], zoom: 15, duration: 800 });
-        }
+        if (cap) panTo(cap.lat, cap.lng, 15);
       });
     });
   }
@@ -184,13 +190,18 @@
       // Snap to captain(s) so the marker is actually in view — otherwise
       // a single captain outside Benha centre looks like "nobody online."
       if (caps.length === 1) {
-        map.jumpTo({ center: [caps[0].lng, caps[0].lat], zoom: 14 });
+        map.setCenter({ lat: caps[0].lat, lng: caps[0].lng });
+        map.setZoom(14);
       } else if (caps.length > 1) {
-        const bounds = caps.reduce(
-          (b, c) => b.extend([c.lng, c.lat]),
-          new maplibregl.LngLatBounds([caps[0].lng, caps[0].lat], [caps[0].lng, caps[0].lat]),
-        );
-        map.fitBounds(bounds, { padding: 60, duration: 0, maxZoom: 14 });
+        const bounds = new google.maps.LatLngBounds();
+        caps.forEach((c) => bounds.extend({ lat: c.lat, lng: c.lng }));
+        map.fitBounds(bounds, 60);
+        // Google has no maxZoom option on fitBounds. Two captains parked next
+        // to each other would otherwise zoom to street level and hide the rest
+        // of the city, so clamp once the camera settles.
+        google.maps.event.addListenerOnce(map, 'idle', () => {
+          if (map.getZoom() > 14) map.setZoom(14);
+        });
       }
     })
     .catch((e) => console.error('live-map snapshot failed', e));
@@ -307,9 +318,11 @@
   };
 
   // Map click handler: only active when user tapped one of the "دوس على الخريطة" buttons
-  map.on('click', async (e) => {
+  map.addListener('click', async (e) => {
     if (!crState.clickMode) return;
-    const { lat, lng } = e.lngLat;
+    if (!e.latLng) return;
+    const lat = e.latLng.lat();
+    const lng = e.latLng.lng();
     const label = await _reverseGeocode(lat, lng);
     _setLocation(crState.clickMode, { lat, lng, label });
     setCrClickMode(null);
@@ -319,7 +332,7 @@
   async function _reverseGeocode(lat, lng) {
     // Best-effort — if it fails, show coords as label.
     try {
-      const r = await fetch(`/api/v1/rides/place-name?lat=${lat}&lng=${lng}`, {
+      const r = await fetch(`/live-map/place-name?lat=${lat}&lng=${lng}`, {
         credentials: 'same-origin',
       });
       if (r.ok) {
@@ -345,11 +358,15 @@
     const loc = crState[kind];
     if (!loc) return;
     const existing = kind === 'pickup' ? crState.pickupMarker : crState.dropoffMarker;
-    if (existing) existing.remove();
+    if (existing) existing.map = null;
     const el = document.createElement('div');
+    el.className = 'center-pin';
     el.style.cssText = `width:20px;height:20px;border-radius:50%;background:${kind === 'pickup' ? '#22c55e' : '#ef4444'};border:3px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,0.4);`;
-    const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
-      .setLngLat([loc.lng, loc.lat]).addTo(map);
+    const marker = new AdvancedMarker({
+      map: map,
+      position: { lat: loc.lat, lng: loc.lng },
+      content: el,
+    });
     if (kind === 'pickup') crState.pickupMarker = marker;
     else crState.dropoffMarker = marker;
   }
@@ -466,8 +483,8 @@
     crPickupPreview.textContent = '— لسه محدد —';
     crDropoffPreview.classList.remove('set');
     crDropoffPreview.textContent = '— لسه محدد —';
-    if (crState.pickupMarker) { crState.pickupMarker.remove(); crState.pickupMarker = null; }
-    if (crState.dropoffMarker) { crState.dropoffMarker.remove(); crState.dropoffMarker = null; }
+    if (crState.pickupMarker) { crState.pickupMarker.map = null; crState.pickupMarker = null; }
+    if (crState.dropoffMarker) { crState.dropoffMarker.map = null; crState.dropoffMarker = null; }
     crState.pickup = null;
     crState.dropoff = null;
     crNearestList.innerHTML = '<div class="empty-note" style="padding:12px 0;">حدد نقطة الاستلام الأول.</div>';
@@ -555,12 +572,16 @@
     searchResults.querySelectorAll('.place-result-row').forEach((row, i) => {
       row.addEventListener('click', () => {
         const p = results[i];
-        map.flyTo({ center: [p.lng, p.lat], zoom: 16, duration: 700 });
-        if (_searchMarker) _searchMarker.remove();
+        panTo(p.lat, p.lng, 16);
+        if (_searchMarker) _searchMarker.map = null;
         const el = document.createElement('div');
+        el.className = 'center-pin';
         el.style.cssText = 'width:22px;height:22px;border-radius:50%;background:#ef4444;border:3px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,0.4);';
-        _searchMarker = new maplibregl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([p.lng, p.lat]).addTo(map);
+        _searchMarker = new AdvancedMarker({
+          map: map,
+          position: { lat: p.lat, lng: p.lng },
+          content: el,
+        });
         searchResults.classList.remove('open');
         searchInput.value = p.label;
       });
@@ -628,7 +649,7 @@
       btn.addEventListener('click', () => {
         const id = parseInt(btn.getAttribute('data-id'), 10);
         const cap = captains.get(id);
-        if (cap) map.flyTo({ center: [cap.lng, cap.lat], zoom: 15, duration: 600 });
+        if (cap) panTo(cap.lat, cap.lng, 15);
         openAssignAlertModal(id);
       });
     });
@@ -729,4 +750,4 @@
       btn.disabled = false; btn.textContent = 'اسند';
     }
   }
-})();
+};
