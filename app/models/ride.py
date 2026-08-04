@@ -59,6 +59,11 @@ class Ride(db.Model):
     # The platform eats it out of its own commission; the captain is always
     # made whole for `net_egp`.
     wallet_discount_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
+    # Promo-code discount, resolved server-side at booking. Like the wallet
+    # discount it comes out of the platform's commission, never the captain's
+    # `net_egp` — which is why `coupons.evaluate` caps it at `commission_egp`.
+    coupon_id = db.Column(db.Integer, db.ForeignKey("coupons.id"), nullable=True, index=True)
+    coupon_discount_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
     # Change the captain couldn't give back in cash, parked in the customer's
     # wallet instead (fare 150, customer hands over 200 → 50 lands here). The
     # customer hands over that much *more* cash now and spends it on a later
@@ -109,9 +114,14 @@ class Ride(db.Model):
 
     @property
     def cash_due_egp(self) -> Decimal:
-        """Cash the customer actually hands over — the total less whatever
-        wallet credit covered, plus any change parked in their wallet."""
-        due = self.total_egp - Decimal(str(self.wallet_discount_egp or 0))
+        """Cash the customer actually hands over — the total less the promo
+        code and whatever wallet credit covered, plus any change parked in
+        their wallet."""
+        due = (
+            self.total_egp
+            - Decimal(str(self.coupon_discount_egp or 0))
+            - Decimal(str(self.wallet_discount_egp or 0))
+        )
         if due < 0:
             due = Decimal("0.00")
         return due + Decimal(str(self.change_credit_egp or 0))
@@ -146,6 +156,7 @@ class Ride(db.Model):
             "total_egp": float(self.total_egp),
             "net_egp": float(self.net_egp),
             "wallet_discount_egp": float(self.wallet_discount_egp or 0),
+            "coupon_discount_egp": float(self.coupon_discount_egp or 0),
             "change_credit_egp": float(self.change_credit_egp or 0),
             "cash_due_egp": float(self.cash_due_egp),
             "status": self.status,

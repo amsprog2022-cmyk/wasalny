@@ -304,7 +304,9 @@ def apply_ride_credit(ride) -> Decimal:
     already = Decimal(str(ride.wallet_discount_egp or 0))
     if already > 0:
         return already
-    total = Decimal(str(ride.total_egp))
+    # Only what is left after the promo code — otherwise wallet + coupon can
+    # exceed the fare and the customer is effectively paid to ride.
+    total = Decimal(str(ride.total_egp)) - Decimal(str(ride.coupon_discount_egp or 0))
     if total <= 0:
         return Decimal("0.00")
     use = min(get_balance(ride.customer_id), total)

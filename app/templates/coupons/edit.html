@@ -1,0 +1,53 @@
+{% extends "layout/base.html" %}
+{% block title %}تعديل {{ coupon.code }} · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-2xl mx-auto space-y-6">
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold">تعديل الكود {{ coupon.code }}</h1>
+    <a href="{{ url_for('coupons.index') }}" class="btn-ghost">← كل الأكواد</a>
+  </div>
+
+  <div class="card">
+    <form method="post" class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs mb-1 text-white/80">نسبة الخصم %</label>
+        <input name="discount_pct" type="number" min="1" max="100"
+               value="{{ coupon.discount_pct }}" class="input" required />
+        <p class="text-xs text-text-muted mt-1">الخصم مبيزيدش عن عمولة الشركة في الرحلة.</p>
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">كام مرة للعميل الواحد</label>
+        <input name="max_uses_per_customer" type="number" min="1"
+               value="{{ coupon.max_uses_per_customer }}" class="input" required />
+      </div>
+      <div class="col-span-2">
+        <label class="block text-xs mb-1 text-white/80">وصف داخلي</label>
+        <input name="description_ar" class="input" value="{{ coupon.description_ar or '' }}" />
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">أقل سعر رحلة (ج.م)</label>
+        <input name="min_fare_egp" type="number" min="0" step="0.01"
+               value="{{ coupon.min_fare_egp or 0 }}" class="input" />
+      </div>
+      <div></div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">يبدأ من (فاضية = من البداية)</label>
+        <input name="starts_at" type="datetime-local" class="input"
+               value="{% if coupon.starts_at %}{{ coupon.starts_at | cairo('%Y-%m-%dT%H:%M') }}{% endif %}" />
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">ينتهي في (فاضية = دايماً)</label>
+        <input name="ends_at" type="datetime-local" class="input"
+               value="{% if coupon.ends_at %}{{ coupon.ends_at | cairo('%Y-%m-%dT%H:%M') }}{% endif %}" />
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">احفظ</button>
+      </div>
+    </form>
+    <p class="text-xs text-text-muted mt-3">
+      الكود نفسه مبيتغيرش — لو عايز كود تاني اعمل واحد جديد ووقّف ده.
+      المواعيد بتوقيت القاهرة.
+    </p>
+  </div>
+</div>
+{% endblock %}

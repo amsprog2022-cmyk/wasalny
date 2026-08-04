@@ -97,6 +97,7 @@ def create_ride(
     dropoff_lng: float | None = None,
     source: str = "app",
     service_kind: str = "private",
+    coupon_code: str | None = None,
 ) -> tuple[Ride, list[int]]:
     """Create a `new` ride.
 
@@ -178,6 +179,16 @@ def create_ride(
         pending_fee_ids = []
         quote_dict = {"deferred": True}
 
+    # Re-resolved here rather than trusted from the client, so the discount is
+    # always computed against the price we just calculated.
+    from app.services import coupons as coupons_svc
+    coupon = coupons_svc.evaluate(
+        coupon_code, customer_id=customer_id, price_egp=price,
+        commission_egp=commission, service_kind=service_kind,
+    )
+    if coupon.error:
+        raise coupons_svc.CouponRejected(coupon.message_ar, coupon.error)
+
     ride = Ride(
         customer_id=customer_id,
         from_zone_id=from_zone_id,
@@ -191,6 +202,8 @@ def create_ride(
         price_egp=price,
         commission_egp=commission,
         no_show_fee_egp=pending_fees,
+        coupon_id=coupon.coupon_id,
+        coupon_discount_egp=coupon.discount_egp,
         status="new",
         source=source,
         service_kind=service_kind,

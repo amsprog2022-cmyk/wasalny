@@ -44,6 +44,7 @@ from app.services import matching
 from app.services import settings as _settings_svc
 from app.services import wa_verify
 from app.services import wallet as _wallet_svc
+from app.services import coupons as coupons_svc
 from app.services.rate_limit import check_verify_start_limit
 
 
@@ -869,6 +870,8 @@ def rides_quote():
     if cid is None:
         return jsonify({"error": "customer_token_required"}), 403
     data = request.json or {}
+    coupon_code = data.get("coupon_code")
+    service_kind = (data.get("service_kind") or "private").strip().lower()
 
     plat = data.get("pickup_lat")
     plng = data.get("pickup_lng")
@@ -881,7 +884,8 @@ def rides_quote():
             )
         except (TypeError, ValueError):
             return jsonify({"error": "coords must be numbers"}), 400
-        return jsonify(_quote_payload(cid, q))
+        return jsonify(_quote_payload(
+            cid, q, coupon_code=coupon_code, service_kind=service_kind))
 
     try:
         from_zone_id = int(data.get("from_zone_id"))
@@ -891,25 +895,44 @@ def rides_quote():
     q = pricing_svc.quote(cid, from_zone_id, to_zone_id)
     if q is None:
         return jsonify({"error": "no_pricing_for_pair"}), 404
-    return jsonify(_quote_payload(cid, q))
+    return jsonify(_quote_payload(
+        cid, q, coupon_code=coupon_code, service_kind=service_kind))
 
 
-def _quote_payload(customer_id: int, q) -> dict:
+def _quote_payload(
+    customer_id: int, q, *, coupon_code: str | None = None,
+    service_kind: str = "private",
+) -> dict:
     """Quote plus the credit that will come off the cash at completion.
 
     Rides settle in cash, so the customer needs to see the credit before
     confirming — otherwise the amount the captain asks for looks wrong.
+
+    A bad promo code is *not* an error here: the sheet stays usable and shows
+    the undiscounted price alongside the Arabic reason the code was refused.
     """
     from app.services import wallet as wallet_svc
 
     payload = q.to_dict()
+
+    res = coupons_svc.evaluate(
+        coupon_code, customer_id=customer_id,
+        price_egp=q.ride_price_egp, commission_egp=q.commission_egp,
+        service_kind=service_kind,
+    )
+    coupon_discount = float(res.discount_egp)
+    payload["coupon_code"] = res.code
+    payload["coupon_discount_egp"] = coupon_discount
+    payload["coupon_error_ar"] = res.message_ar
+
+    after_coupon = max(payload["total_egp"] - coupon_discount, 0.0)
     try:
         balance = float(wallet_svc.get_balance(customer_id))
     except Exception:  # noqa: BLE001
         balance = 0.0
     payload["wallet_balance_egp"] = balance
-    payload["wallet_discount_egp"] = min(balance, payload["total_egp"])
-    payload["cash_due_egp"] = max(payload["total_egp"] - balance, 0.0)
+    payload["wallet_discount_egp"] = min(balance, after_coupon)
+    payload["cash_due_egp"] = max(after_coupon - balance, 0.0)
     return payload
 
 
@@ -956,7 +979,10 @@ def rides_create():
         return jsonify({"error": "invalid_service_kind"}), 400
 
     try:
-        kwargs = {"customer_id": cid, "source": "app", "service_kind": service_kind}
+        kwargs = {
+            "customer_id": cid, "source": "app", "service_kind": service_kind,
+            "coupon_code": data.get("coupon_code"),
+        }
         if has_gps:
             kwargs.update({
                 "pickup_lat":  float(plat), "pickup_lng":  float(plng),
@@ -965,6 +991,10 @@ def rides_create():
         else:
             kwargs.update({"from_zone_id": from_zone_id, "to_zone_id": to_zone_id})
         ride, pending_ids = ride_lifecycle.create_ride(**kwargs)
+    except coupons_svc.CouponRejected as e:
+        # The code was valid on the confirm sheet but went bad before the tap.
+        # Refuse rather than silently booking at the undiscounted price.
+        return jsonify({"error": "coupon_rejected", "coupon_error_ar": e.message_ar}), 400
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
