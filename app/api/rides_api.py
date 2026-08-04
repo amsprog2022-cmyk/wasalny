@@ -418,6 +418,16 @@ def driver_availability():
         av.heartbeat(did)
     else:
         return jsonify({"error": "unknown_action"}), 400
+
+    # The captain app toggles availability over HTTP, but only the /driver
+    # socket handlers used to broadcast presence — so the admin live map
+    # never heard about a Go Online / Go Offline and needed a refresh.
+    # Heartbeats are excluded: they fire constantly and change no state the
+    # map renders.
+    if action != "heartbeat":
+        from app.sockets.driver_socket import _broadcast_presence_to_admin
+        _broadcast_presence_to_admin(did)
+
     payload = av.get_presence(did).__dict__
     if resolved_zone_dict is not None:
         payload["zone"] = resolved_zone_dict

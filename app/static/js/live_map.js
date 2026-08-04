@@ -178,15 +178,34 @@ window.initLiveMap = function () {
     });
   }
 
-  // -------- initial snapshot --------
-  fetch('/live-map/data', { credentials: 'same-origin' })
+  // -------- snapshot --------
+  // Also runs on a timer. `is_live` is derived from heartbeat age on the
+  // server, so a captain who force-quits the app goes stale without any
+  // event being emitted — polling is the only way the map can notice.
+  // It doubles as a self-heal for socket events missed while backgrounded.
+  function loadSnapshot(initial) {
+    return fetch('/live-map/data', { credentials: 'same-origin' })
     .then((r) => r.json())
     .then((data) => {
       const caps = data.captains || [];
       caps.forEach(upsertMarker);
+
+      // Drop captains the server no longer reports, otherwise a stale
+      // marker lingers until someone reloads the page.
+      const stillThere = new Set(caps.map(_capKey));
+      Array.from(captains.keys()).forEach((id) => {
+        if (!stillThere.has(id)) removeMarker(id);
+      });
+
+      rides.clear();
       (data.rides || []).forEach((r) => rides.set(r.id, r));
       updateCounts();
       renderRideList();
+      renderCaptainList();
+
+      // Camera only on first load — re-snapping every poll would yank the
+      // map out from under an admin who has panned somewhere.
+      if (!initial) return;
       // Snap to captain(s) so the marker is actually in view — otherwise
       // a single captain outside Benha centre looks like "nobody online."
       if (caps.length === 1) {
@@ -205,6 +224,10 @@ window.initLiveMap = function () {
       }
     })
     .catch((e) => console.error('live-map snapshot failed', e));
+  }
+
+  loadSnapshot(true);
+  setInterval(() => loadSnapshot(false), 20000);
 
   // -------- socket --------
   // websocket-only — see inbox.js: a polling handshake + upgrade can land

@@ -221,9 +221,17 @@ def _broadcast_presence_to_admin(driver_id: int) -> None:
     Redis error since a broken presence emit shouldn't affect the
     captain's own flow."""
     try:
+        from app.models.ride import Ride
+
         driver = db.session.get(Driver, driver_id)
         pos = av.get_position(driver_id)
         presence = av.get_presence(driver_id)
+        ride = (
+            Ride.query
+            .filter(Ride.driver_id == driver_id)
+            .filter(Ride.status.in_(("assigned", "started")))
+            .first()
+        )
         socketio.emit(
             "driver_presence_update",
             {
@@ -232,6 +240,11 @@ def _broadcast_presence_to_admin(driver_id: int) -> None:
                 "wa_id": (driver.wa_id if driver else None),
                 "online": presence.online,
                 "available": presence.available,
+                # is_live and on_trip_ride_id are what the live map colours
+                # the dot by. Omitting them left the client merging a partial
+                # record, so a captain stayed "ghost" until a page refresh.
+                "is_live": presence.is_live,
+                "on_trip_ride_id": (ride.id if ride else None),
                 "lat": pos[0] if pos else None,
                 "lng": pos[1] if pos else None,
             },
