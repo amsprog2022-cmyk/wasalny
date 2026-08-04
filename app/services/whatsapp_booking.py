@@ -332,8 +332,7 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
         # decision so the customer isn't left in silence for 2-3 min.
         ack = (
             f"🚗 تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
-            + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address
-               else ".\nالكابتن أول ما يوصل هيتفق معاك على الوجهة والسعر.")
+            + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address else ".")
         )
         _try_send(customer.wa_id, ack, customer=customer)
         matching.start_matching(ride.id, pending_fee_ids=pending_ids)

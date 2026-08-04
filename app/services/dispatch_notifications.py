@@ -7,6 +7,7 @@ This module centralises that so the two callers stay in sync.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from flask import current_app
@@ -33,11 +34,12 @@ def notify_customer_of_assignment(customer: Customer, driver: Driver) -> bool:
         car_bits.append(driver.car_color)
     car_line = " · ".join(car_bits)
     plate = getattr(driver, "car_plate", None)
-    wa_display = (
-        driver.wa_id
-        if driver.wa_id and driver.wa_id.startswith("+")
-        else f"+{driver.wa_id}" if driver.wa_id else ""
-    )
+    # Captains get added through several paths, so wa_id lands here as
+    # '201…', '+201…' or a local '01…'. WhatsApp only linkifies a proper
+    # E.164 number, so normalise before printing it.
+    digits = re.sub(r"\D", "", driver.wa_id or "")
+    if digits.startswith("0"):
+        digits = "20" + digits[1:]
     body_lines = [
         f"🚗 كابتن {driver.name} جاي دلوقتي.",
     ]
@@ -45,9 +47,9 @@ def notify_customer_of_assignment(customer: Customer, driver: Driver) -> bool:
         body_lines.append(f"العربية: {car_line}")
     if plate:
         body_lines.append(f"اللوحة: {plate}")
-    if wa_display:
-        body_lines.append(f"📞 رقمه: {wa_display}")
-        body_lines.append("لو محتاج تكلمه اضغط على الرقم.")
+    if digits:
+        body_lines.append(f"📞 رقم الكابتن: +{digits}")
+        body_lines.append(f"للاتصال أو الواتساب: https://wa.me/{digits}")
     body = "\n".join(body_lines)
 
     try:
