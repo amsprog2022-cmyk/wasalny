@@ -719,6 +719,23 @@ def customer_register():
     if existing is not None:
         if existing.deleted_at is not None:
             return jsonify({"error": "account_deleted"}), 403
+        # Legacy WhatsApp-only customer (booked before the app existed):
+        # they have a Customer row for ride history but no password. Treat
+        # register as an upgrade — attach the name + password, keep the
+        # ride history, and log them in. Ticket is required so a stranger
+        # can't hijack the number.
+        if not existing.password_hash:
+            if not ticket:
+                return jsonify({"error": "verification_required"}), 403
+            existing.name = name
+            existing.set_password(password)
+            existing.phone_verified_at = verified_at
+            db.session.commit()
+            return jsonify({
+                "access_token": _issue_customer_token(existing),
+                "refresh_token": _issue_customer_refresh_token(existing),
+                "customer": _customer_payload(existing),
+            })
         return jsonify({"error": "phone_already_registered"}), 409
 
     customer = Customer(wa_id=wa_id, name=name)
