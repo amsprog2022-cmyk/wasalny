@@ -18,6 +18,7 @@ from app.models.customer import Customer
 from app.models.driver import Driver
 from app.models.wallet import CustomerWallet, DriverWallet
 from app.services import audit
+from app.services import push_notifications as push
 from app.services import wallet as wallet_svc
 
 
@@ -125,6 +126,15 @@ def driver_settle_all(driver_id: int):
         after={"balance_egp": float(wallet_svc.driver_balance(driver_id))},
     )
     db.session.commit()
+    try:
+        push.send_to_driver(
+            driver_id,
+            title="✅ الحساب اتسدد",
+            body=f"استلمنا {amount:.0f} ج.م. يلا شغال تاني.",
+            data={"kind": "wallet_settled"},
+        )
+    except Exception:
+        pass
     msg = f"اتحصل {amount} ج.م والحساب صفر."
     if unblocked:
         msg += " والكابتن يقدر يشتغل تاني."
@@ -153,6 +163,21 @@ def driver_block(driver_id: int):
         before={"discipline_status": before},
         after={"discipline_status": "suspended", "reason": "wallet_debt"},
     )
+    owed = -wallet_svc.driver_balance(driver_id)
+    try:
+        push.send_to_driver(
+            driver_id,
+            title="🚫 اتوقفت عن الرحلات",
+            body=(
+                f"عليك {owed:.0f} ج.م. عدّي على الإدارة سدّد الفلوس "
+                "علشان تشتغل تاني."
+                if owed > 0 else
+                "الإدارة أوقفتك مؤقتًا. كلّمهم علشان يفتحوا حسابك."
+            ),
+            data={"kind": "driver_blocked"},
+        )
+    except Exception:
+        pass
     flash("الكابتن اتمنع من الرحلات لحد ما يسدد.", "success")
     return redirect(url_for("wallets.index"))
 
@@ -176,6 +201,15 @@ def driver_unblock(driver_id: int):
         before={"discipline_status": before},
         after={"discipline_status": "active"},
     )
+    try:
+        push.send_to_driver(
+            driver_id,
+            title="✅ رجّعناك للرحلات",
+            body="حسابك اتفتح تاني. يلا شغال.",
+            data={"kind": "driver_unblocked"},
+        )
+    except Exception:
+        pass
     flash("الكابتن رجع يقدر يشتغل.", "success")
     return redirect(url_for("wallets.index"))
 
