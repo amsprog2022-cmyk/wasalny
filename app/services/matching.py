@@ -50,6 +50,23 @@ def _accept_window() -> int:
     return int(current_app.config.get("BROADCAST_ACCEPT_WINDOW_SECONDS", 30))
 
 
+def _blocked_driver_ids() -> set[int]:
+    """Captains admin doesn't want to receive rides right now — suspended or
+    banned discipline. Includes soft-deleted rows for safety. Nuclear
+    enforcement point: both matching paths must skip these before emitting.
+    """
+    from app.models.driver import Driver
+    rows = (
+        db.session.query(Driver.id)
+        .filter(
+            (Driver.discipline_status.in_(("suspended", "banned"))) |
+            (Driver.deleted_at.isnot(None))
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
 def _max_rounds() -> int:
     return int(current_app.config.get("MATCHING_MAX_ROUNDS", 3))
 
@@ -271,6 +288,7 @@ def _gps_match(ride: Ride, tried: set[int], r) -> Optional[int]:
     except (TypeError, ValueError):
         radii = [3.0, 6.0, 10.0]
     top_n = int(current_app.config.get("GEO_MATCH_TOP_N", 1))
+    blocked = _blocked_driver_ids()
 
     for radius_km in radii:
         # Ask for more than top_n so we can filter for available + not-tried
@@ -281,6 +299,8 @@ def _gps_match(ride: Ride, tried: set[int], r) -> Optional[int]:
         picked: list[int] = []
         for driver_id, _distance, _coords in candidates:
             if driver_id in tried:
+                continue
+            if driver_id in blocked:
                 continue
             presence = av.get_presence(driver_id)
             if not presence.available:
@@ -344,6 +364,9 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
         tried.add(current_zone.id)
 
         driver_ids = av.available_drivers_in_zone(current_zone.id)
+        # Filter blocked (suspended/banned/deleted) captains here too.
+        blocked = _blocked_driver_ids()
+        driver_ids = [d for d in driver_ids if d not in blocked]
         # Respect the same TOP_N cap the GPS path uses — otherwise the zone
         # fallback silently fans out to EVERY driver in the zone and two
         # nearby phones both ring. Nuclear guarantee: at most top_n offers

@@ -7,6 +7,7 @@ going online.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
@@ -93,6 +94,89 @@ def driver_settle(driver_id: int):
     )
     db.session.commit()
     flash(f"اتسجل تحصيل {amount} ج.م.", "success")
+    return redirect(url_for("wallets.index"))
+
+
+@wallets_bp.route("/driver/<int:driver_id>/settle-all", methods=["POST"])
+@login_required
+def driver_settle_all(driver_id: int):
+    """One-click: captain paid the full debt in cash. Settles the outstanding
+    balance in a single wallet transaction and unblocks him (if he was
+    blocked from rides because of the debt)."""
+    bal = wallet_svc.driver_balance(driver_id)
+    if bal >= 0:
+        flash("مفيش مديونية على الكابتن ده.", "warning")
+        return redirect(url_for("wallets.index"))
+    amount = -bal  # bal is negative; owed amount is positive
+    wallet_svc.settle_driver_cash(
+        driver_id, amount,
+        admin_user_id=current_user.id,
+        note="Full settlement",
+    )
+    driver = db.session.get(Driver, driver_id)
+    unblocked = False
+    if driver and driver.discipline_status == "suspended":
+        driver.discipline_status = "active"
+        driver.suspended_until = None
+        unblocked = True
+    audit.record(
+        "wallet.driver_settle_all", target_kind="driver", target_id=driver_id,
+        before={"balance_egp": float(bal), "unblocked": unblocked},
+        after={"balance_egp": float(wallet_svc.driver_balance(driver_id))},
+    )
+    db.session.commit()
+    msg = f"اتحصل {amount} ج.م والحساب صفر."
+    if unblocked:
+        msg += " والكابتن يقدر يشتغل تاني."
+    flash(msg, "success")
+    return redirect(url_for("wallets.index"))
+
+
+@wallets_bp.route("/driver/<int:driver_id>/block", methods=["POST"])
+@login_required
+def driver_block(driver_id: int):
+    """Stop the captain from receiving trips until he clears his debt.
+    Matching engine skips discipline_status='suspended'."""
+    if not current_user.is_admin:
+        flash("Admins only.", "error")
+        return redirect(url_for("wallets.index"))
+    driver = db.session.get(Driver, driver_id)
+    if driver is None:
+        flash("Captain not found.", "error")
+        return redirect(url_for("wallets.index"))
+    before = driver.discipline_status
+    driver.discipline_status = "suspended"
+    driver.suspended_until = None  # indefinite until admin unblocks
+    db.session.commit()
+    audit.record(
+        "driver.block", target_kind="driver", target_id=driver_id,
+        before={"discipline_status": before},
+        after={"discipline_status": "suspended", "reason": "wallet_debt"},
+    )
+    flash("الكابتن اتمنع من الرحلات لحد ما يسدد.", "success")
+    return redirect(url_for("wallets.index"))
+
+
+@wallets_bp.route("/driver/<int:driver_id>/unblock", methods=["POST"])
+@login_required
+def driver_unblock(driver_id: int):
+    if not current_user.is_admin:
+        flash("Admins only.", "error")
+        return redirect(url_for("wallets.index"))
+    driver = db.session.get(Driver, driver_id)
+    if driver is None:
+        flash("Captain not found.", "error")
+        return redirect(url_for("wallets.index"))
+    before = driver.discipline_status
+    driver.discipline_status = "active"
+    driver.suspended_until = None
+    db.session.commit()
+    audit.record(
+        "driver.unblock", target_kind="driver", target_id=driver_id,
+        before={"discipline_status": before},
+        after={"discipline_status": "active"},
+    )
+    flash("الكابتن رجع يقدر يشتغل.", "success")
     return redirect(url_for("wallets.index"))
 
 
