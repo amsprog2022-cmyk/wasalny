@@ -332,6 +332,12 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
         tried.add(current_zone.id)
 
         driver_ids = av.available_drivers_in_zone(current_zone.id)
+        # Respect the same TOP_N cap the GPS path uses — otherwise the zone
+        # fallback silently fans out to EVERY driver in the zone and two
+        # nearby phones both ring. Nuclear guarantee: at most top_n offers
+        # per wave, per matcher path.
+        top_n = int(current_app.config.get("GEO_MATCH_TOP_N", 1))
+        driver_ids = driver_ids[:top_n]
         b = Broadcast(
             ride_id=ride.id,
             zone_id=current_zone.id,
