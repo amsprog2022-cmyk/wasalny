@@ -5,7 +5,7 @@ from typing import Optional
 from flask_socketio import emit
 
 from app import db, socketio
-from app.models import Customer, Driver, Conversation, Message
+from app.models import Customer, Conversation, Message
 from app.services import whatsapp
 
 
@@ -21,21 +21,13 @@ def _get_or_create_customer(wa_id: str, profile_name: Optional[str] = None) -> C
     return customer
 
 
-def _find_driver(wa_id: str) -> Optional[Driver]:
-    return Driver.query.filter_by(wa_id=wa_id).first()
-
-
 def _get_or_create_conversation(peer_wa_id: str, profile_name: Optional[str] = None) -> Conversation:
-    """Match incoming wa_id: if it's a known driver, use driver conversation, else customer."""
-    driver = _find_driver(peer_wa_id)
-    if driver:
-        conv = Conversation.query.filter_by(driver_id=driver.id, kind="driver").first()
-        if not conv:
-            conv = Conversation(kind="driver", driver_id=driver.id)
-            db.session.add(conv)
-            db.session.flush()
-        return conv
-
+    """Every WhatsApp inbound is treated as a customer message, so the AI
+    booking pipeline always runs. A captain who happens to be booking a
+    ride is still a client on WhatsApp — the driver identity only matters
+    inside the captain app. Old driver-tagged conversations stay in the
+    inbox for history but new messages always land on a customer conv.
+    """
     customer = _get_or_create_customer(peer_wa_id, profile_name)
     conv = Conversation.query.filter_by(customer_id=customer.id, kind="customer").first()
     if not conv:
