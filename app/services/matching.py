@@ -47,7 +47,7 @@ def _r():
 
 
 def _accept_window() -> int:
-    return int(current_app.config.get("BROADCAST_ACCEPT_WINDOW_SECONDS", 10))
+    return int(current_app.config.get("BROADCAST_ACCEPT_WINDOW_SECONDS", 30))
 
 
 def _max_rounds() -> int:
@@ -258,7 +258,7 @@ def _gps_match(ride: Ride, tried: set[int], r) -> Optional[int]:
         radii = [float(x.strip()) for x in str(radii_str).split(",") if x.strip()]
     except (TypeError, ValueError):
         radii = [3.0, 6.0, 10.0]
-    top_n = int(current_app.config.get("GEO_MATCH_TOP_N", 3))
+    top_n = int(current_app.config.get("GEO_MATCH_TOP_N", 1))
 
     for radius_km in radii:
         # Ask for more than top_n so we can filter for available + not-tried
