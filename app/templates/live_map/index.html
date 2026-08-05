@@ -150,6 +150,20 @@
     margin-bottom: 8px;
   }
   .captain-search-input:focus { border-color: #F57C00; }
+  .captain-filters {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    margin-bottom: 8px;
+  }
+  .captain-filter-chip {
+    padding: 4px 10px; border-radius: 999px;
+    background: #1a1a24; border: 1px solid rgba(255,255,255,0.08);
+    color: #9aa0aa; font-size: 11px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .captain-filter-chip:hover { color: #fff; }
+  .captain-filter-chip.active {
+    background: #F57C00; color: #fff; border-color: #F57C00;
+  }
   .captain-row {
     text-align: right;
     display: flex; justify-content: space-between; align-items: center;
@@ -320,6 +334,13 @@
       <h3>الكباتن <span class="cnt">(<span id="captains-shown">0</span>)</span></h3>
       <input id="captain-search-input" class="captain-search-input"
              type="text" placeholder="🔍 ابحث بالاسم أو الرقم…" autocomplete="off" />
+      <div id="captain-filters" class="captain-filters">
+        <button class="captain-filter-chip active" data-filter="all">الكل</button>
+        <button class="captain-filter-chip" data-filter="available">🟢 متاح</button>
+        <button class="captain-filter-chip" data-filter="on_trip">🚗 على رحلة</button>
+        <button class="captain-filter-chip" data-filter="unavailable">⚪ مشغول</button>
+        <button class="captain-filter-chip" data-filter="offline">🔴 مش متصل</button>
+      </div>
       <div id="captain-list"></div>
     </div>
   </aside>

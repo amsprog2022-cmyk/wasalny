@@ -630,22 +630,49 @@ window.initLiveMap = function () {
   const captainListEl = document.getElementById('captain-list');
   const captainCountEl = document.getElementById('captains-shown');
   const captainSearchInput = document.getElementById('captain-search-input');
+  const captainFiltersEl = document.getElementById('captain-filters');
   let _captainQuery = '';
+  let _captainFilter = 'all';  // all | available | on_trip | unavailable | offline
 
   captainSearchInput.addEventListener('input', () => {
     _captainQuery = captainSearchInput.value.trim().toLowerCase();
     renderCaptainList();
   });
 
+  if (captainFiltersEl) {
+    captainFiltersEl.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.captain-filter-chip');
+      if (!btn) return;
+      _captainFilter = btn.getAttribute('data-filter') || 'all';
+      captainFiltersEl.querySelectorAll('.captain-filter-chip').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+      renderCaptainList();
+    });
+  }
+
+  // Categorise once — same taxonomy the marker dot uses, but grouped so
+  // "offline" also covers ghosts (last heartbeat too old to be reachable).
+  function _stateBucket(c) {
+    if (c.on_trip_ride_id) return 'on_trip';
+    if (c.online === false) return 'offline';
+    if (c.is_live === false) return 'offline';
+    return c.available ? 'available' : 'unavailable';
+  }
+
   function renderCaptainList() {
     if (!captainListEl) return;
     const all = [...captains.values()].filter((c) => c && (c.lat != null));
-    const filtered = _captainQuery
-      ? all.filter((c) => {
-          const hay = `${c.name || ''} ${c.wa_id || ''}`.toLowerCase();
-          return hay.includes(_captainQuery);
-        })
-      : all;
+    let filtered = all;
+    if (_captainQuery) {
+      filtered = filtered.filter((c) => {
+        const hay = `${c.name || ''} ${c.wa_id || ''}`.toLowerCase();
+        return hay.includes(_captainQuery);
+      });
+    }
+    if (_captainFilter !== 'all') {
+      filtered = filtered.filter((c) => _stateBucket(c) === _captainFilter);
+    }
     filtered.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     captainCountEl.textContent = filtered.length;
     if (filtered.length === 0) {
