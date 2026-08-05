@@ -61,7 +61,7 @@ class Config:
 
     # GPS matching (Phase 2). How many captains to offer to at once + the
     # cascading radii we escalate through if nobody's close.
-    GEO_MATCH_TOP_N    = int(os.getenv("GEO_MATCH_TOP_N",       "3"))
+    GEO_MATCH_TOP_N    = int(os.getenv("GEO_MATCH_TOP_N",       "1"))
     GEO_MATCH_RADII_KM = os.getenv("GEO_MATCH_RADII_KM",        "3,6,10")
 
     # Business rules (Decisions #10, #14, config §Appendix B)

@@ -218,6 +218,13 @@ def match_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show"):
         return
 
+    current_app.logger.info(
+        "match_ride ride=%s top_n=%s window=%ss radii=%s",
+        ride_id,
+        current_app.config.get("GEO_MATCH_TOP_N"),
+        _accept_window(),
+        current_app.config.get("GEO_MATCH_RADII_KM"),
+    )
     ride_lifecycle.mark_broadcasting(ride)
 
     tried: set[int] = set()
