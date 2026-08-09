@@ -1,0 +1,71 @@
+{% extends "layout/base.html" %}
+{% block title %}أرقام المكاتب · وصلني بنها{% endblock %}
+{% block content %}
+<div class="p-6 max-w-4xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold">🏢 أرقام المكاتب</h1>
+    <p class="text-text-muted text-sm">الرسائل الجاية من الأرقام دي بتتحول لرحلة على طول: بناخد رقم العميل والمكان من الرسالة، وبنبعت الطلب للكباتن، وبنرد على المكتب بالكابتن اللي قبل.</p>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">ضيف رقم مكتب</h2>
+    <form method="post" action="{{ url_for('office_numbers.new') }}" class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs mb-1 text-white/80">رقم الواتساب</label>
+        <input name="wa_id" class="input" required placeholder="01050084115" dir="ltr" />
+        <p class="text-xs text-text-muted mt-1">اكتبه بأي صيغة، هنظبطه لوحدنا.</p>
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">اسم المكتب (اختياري)</label>
+        <input name="label" class="input" placeholder="مكتب بنها الرئيسي" />
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">ضيف الرقم</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">الرقم</th>
+          <th class="text-right px-4 py-3">المكتب</th>
+          <th class="text-right px-4 py-3">رحلات</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th class="text-right px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for n in numbers %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3 font-bold" dir="ltr">{{ n.wa_id }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ n.label or '—' }}</td>
+            <td class="px-4 py-3 text-text-muted">{{ counts.get(n.wa_id, 0) }}</td>
+            <td class="px-4 py-3">
+              {% if n.is_active %}
+                <span class="text-success">شغال</span>
+              {% else %}
+                <span class="text-text-muted">متوقف</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center gap-2">
+                <form method="post" action="{{ url_for('office_numbers.toggle', number_id=n.id) }}">
+                  <button class="btn-ghost text-xs">{% if n.is_active %}وقّفه{% else %}شغّله{% endif %}</button>
+                </form>
+                <form method="post" action="{{ url_for('office_numbers.delete', number_id=n.id) }}"
+                      onsubmit="return confirm('تمسح الرقم {{ n.wa_id }}؟')">
+                  <button class="btn-ghost text-xs text-red-300">مسح</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="px-4 py-8 text-center text-text-muted">مفيش أرقام مكاتب.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -72,7 +72,13 @@ class Ride(db.Model):
     change_credit_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
 
     status = db.Column(db.String(24), default="new", nullable=False, index=True)
+    # "app" | "whatsapp" | "office". The office value is load-bearing: it is
+    # what keeps ride_lifecycle.assign and matching from WhatsApping a customer
+    # who never contacted us — the office phoned them, we did not.
     source = db.Column(db.String(16), default="app", nullable=False)
+    # Which office pasted this trip in, so the accept confirmation knows where
+    # to reply. NULL on every other source.
+    office_wa_id = db.Column(db.String(20), index=True)
     # Vehicle-type bucket the customer picked on the home cards.
     # "private" is the current auto-broadcast flow; the other three
     # (suzuki, delivery, vip) stay in `broadcasting` waiting for admin

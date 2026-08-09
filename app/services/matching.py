@@ -208,7 +208,8 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
     # both on arrival. Distinguish the two body copies so captains know what
     # they're accepting.
     if ride.to_zone_id is None and not ride.dropoff_address:
-        body_ar = f"طلب واتساب من {from_txt} · الوجهة والسعر بعد الوصول"
+        label = "طلب مكتب" if ride.source == "office" else "طلب واتساب"
+        body_ar = f"{label} من {from_txt} · الوجهة والسعر بعد الوصول"
     else:
         net_egp = float(ride.price_egp) * (1 - float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
         body_ar = f"من {from_txt} إلى {to_txt} · صافي {net_egp:.0f} ج.م"
@@ -417,6 +418,149 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
             current_zone = _pick_next_zone(ride, tried)
             round_no += 1
     return winner
+
+
+# ---------- office dispatch ----------
+
+def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
+    """Matching for a trip the office took by phone and pasted into WhatsApp.
+
+    Two rounds only — nearest captain, then everybody. The office caller is
+    on the line, so there is no time for the 3/6/10 km ladder that app rides
+    walk through. The fastest-wins guarantee is unchanged: every accept still
+    goes through `try_claim`, the blast only widens the audience.
+    """
+    r = _r()
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return
+    if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show"):
+        return
+
+    ride_lifecycle.mark_broadcasting(ride)
+    tried: set[int] = set()
+    winner: Optional[int] = None
+
+    if ride.pickup_lat is not None and ride.pickup_lng is not None:
+        winner = _office_round(
+            ride, _office_nearest_candidates(ride, tried), tried, r,
+            int(current_app.config.get("OFFICE_NEAREST_WINDOW_SECONDS", 20)),
+        )
+
+    if winner is None:
+        winner = _office_round(
+            ride, _office_blast_candidates(tried), tried, r,
+            int(current_app.config.get("OFFICE_BLAST_WINDOW_SECONDS", 45)),
+        )
+
+    r.delete(f"broadcast:{ride.id}:offered_to")
+
+    if winner:
+        db.session.refresh(ride)
+        ride_lifecycle.assign(ride, winner, pending_fee_ids=pending_fee_ids)
+        from app.services import office_dispatch
+        office_dispatch.notify_office_assigned(ride)
+        return
+
+    db.session.refresh(ride)
+    r.delete(f"ride:{ride.id}:lock")
+    ride_lifecycle.cancel(ride, actor="system", reason="no_driver_available")
+    _emit_no_driver_alert(ride)
+    from app.services import office_dispatch
+    office_dispatch.notify_office_no_driver(ride)
+
+
+def _office_nearest_candidates(ride: Ride, tried: set[int]) -> list[int]:
+    """The single closest available captain to the pickup."""
+    radius = float(current_app.config.get("OFFICE_NEAREST_RADIUS_KM", 10))
+    blocked = _blocked_driver_ids()
+    for driver_id, _distance, _coords in av.nearest_drivers(
+        ride.pickup_lat, ride.pickup_lng, radius_km=radius, limit=8,
+    ):
+        if driver_id in tried or driver_id in blocked:
+            continue
+        if not av.get_presence(driver_id).available:
+            continue
+        return [driver_id]
+    return []
+
+
+def _office_blast_candidates(tried: set[int]) -> list[int]:
+    """Every captain we can physically reach — offline ones included.
+
+    Presence is deliberately not checked. A captain whose app is closed still
+    gets the FCM push, and accepting it flips him online (ride_lifecycle.assign).
+    The only exclusion beyond discipline is a captain already on a trip.
+    """
+    from app.models.driver import Driver
+
+    blocked = _blocked_driver_ids()
+    rows = (
+        db.session.query(Driver.id)
+        .filter(Driver.fcm_token.isnot(None), Driver.deleted_at.is_(None))
+        .all()
+    )
+    r = _r()
+    return [
+        did for (did,) in rows
+        if did not in tried and did not in blocked
+        and not r.exists(f"driver:{did}:current_ride")
+    ]
+
+
+def _office_round(ride: Ride, picked: list[int], tried: set[int], r,
+                  window_s: int) -> Optional[int]:
+    """Offer to `picked` and wait `window_s` for one of them to claim it."""
+    b = Broadcast(
+        ride_id=ride.id,
+        zone_id=ride.from_zone_id or 0,
+        driver_ids_json=json.dumps(picked),
+    )
+    db.session.add(b)
+    db.session.commit()
+
+    if not picked:
+        b.outcome = "no_drivers"
+        b.ended_at = datetime.utcnow()
+        db.session.commit()
+        return None
+
+    tried.update(picked)
+    r.sadd(f"broadcast:{ride.id}:offered_to", *[str(x) for x in picked])
+    r.expire(f"broadcast:{ride.id}:offered_to", window_s + 5)
+    _emit_offer(ride, picked)
+
+    winner = _wait_for_accept(ride.id, window_s)
+    b.ended_at = datetime.utcnow()
+    b.outcome = "accepted" if winner else "timeout"
+    if winner:
+        b.accepted_by_driver_id = winner
+    db.session.commit()
+
+    if not winner:
+        for did in picked:
+            socketio.emit(
+                "trip_offer_expired",
+                {"ride_id": ride.id},
+                namespace="/driver",
+                room=f"driver:{did}",
+            )
+    return winner
+
+
+def start_office_matching(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
+    app = current_app._get_current_object()
+    pending_fee_ids = pending_fee_ids or []
+
+    def _worker():
+        with app.app_context():
+            try:
+                match_office_ride(ride_id, pending_fee_ids=pending_fee_ids)
+            except Exception as e:
+                app.logger.exception("office matching failed for ride %s: %s", ride_id, e)
+                _report_to_sentry(e, ride_id=ride_id, where="match_office_ride")
+
+    eventlet.spawn_n(_worker)
 
 
 def _emit_no_driver_alert(ride: Ride) -> None:

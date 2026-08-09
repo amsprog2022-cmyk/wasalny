@@ -9,6 +9,7 @@ from flask import Blueprint, request, current_app, abort
 from app.services import whatsapp
 from app.services.inbox import handle_incoming_message, handle_status_update
 from app.services import whatsapp_booking
+from app.services import office_dispatch
 from app.services import wa_verify
 from app.services.rate_limit import check_verify_attempt_limit
 
@@ -69,6 +70,13 @@ def receive():
                 if msg.get("type") == "text":
                     body = (msg.get("text") or {}).get("body") or ""
                     if _handle_verification(msg.get("from") or "", body):
+                        continue
+                    # An office pastes a customer's number and a pickup, on
+                    # behalf of someone who phoned them. It must never reach
+                    # the booking pipeline below, which would try to book a
+                    # trip *for the office* instead of dispatching one.
+                    if office_dispatch.is_office(msg.get("from") or ""):
+                        _spawn_office_dispatch(msg.get("from") or "", body)
                         continue
 
                 # Route customer text + location messages through the AI
@@ -148,6 +156,24 @@ def _interactive_reply_id(msg: dict) -> str | None:
         if isinstance(reply, dict) and reply.get("id"):
             return str(reply["id"])
     return None
+
+
+def _spawn_office_dispatch(office_wa_id: str, body: str) -> None:
+    """Parse + dispatch an office message in a greenlet.
+
+    Geocoding and matching both block for seconds; Meta retries aggressively
+    if the webhook doesn't return promptly.
+    """
+    app = current_app._get_current_object()
+
+    def _work():
+        with app.app_context():
+            try:
+                office_dispatch.handle_office_message(office_wa_id, body)
+            except Exception:
+                app.logger.exception("office dispatch failed for %s", office_wa_id)
+
+    eventlet.spawn_n(_work)
 
 
 def _spawn_ai_booking(customer_id: int, payload: dict) -> None:

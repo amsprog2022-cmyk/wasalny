@@ -64,6 +64,19 @@ class Config:
     GEO_MATCH_TOP_N    = int(os.getenv("GEO_MATCH_TOP_N",       "1"))
     GEO_MATCH_RADII_KM = os.getenv("GEO_MATCH_RADII_KM",        "3,6,10")
 
+    # Office dispatch (trips the office takes by phone and pastes into
+    # WhatsApp). One nearest-captain round, then everyone — the office caller
+    # is on the line, so there's no time for the 3/6/10 km ladder. The blast
+    # window is long because it has to survive an FCM wake-up on a phone that
+    # was asleep.
+    OFFICE_NEAREST_RADIUS_KM = float(os.getenv("OFFICE_NEAREST_RADIUS_KM", "10"))
+    OFFICE_NEAREST_WINDOW_SECONDS = int(
+        os.getenv("OFFICE_NEAREST_WINDOW_SECONDS", "20")
+    )
+    OFFICE_BLAST_WINDOW_SECONDS = int(
+        os.getenv("OFFICE_BLAST_WINDOW_SECONDS", "45")
+    )
+
     # Business rules (Decisions #10, #14, config §Appendix B)
     WASSALNY_COMMISSION_RATE = os.getenv("WASSALNY_COMMISSION_RATE", "0.15")
     # Fallback price when a zone pair isn't in the pricing matrix. With ~350
@@ -90,7 +103,7 @@ class Config:
     # wallet for a later ride. The window is how long after completion he can
     # still record it.
     CHANGE_CREDIT_MIN_EGP = float(os.getenv("CHANGE_CREDIT_MIN_EGP", "5"))
-    CHANGE_CREDIT_MAX_EGP = float(os.getenv("CHANGE_CREDIT_MAX_EGP", "100"))
+    CHANGE_CREDIT_MAX_EGP = float(os.getenv("CHANGE_CREDIT_MAX_EGP", "200"))
     CHANGE_CREDIT_WINDOW_MINUTES = int(
         os.getenv("CHANGE_CREDIT_WINDOW_MINUTES", "60")
     )

@@ -1707,11 +1707,12 @@ def rides_credit_change(ride_id: int):
     ):
         return jsonify({"error": "window_expired", "window_minutes": window}), 409
 
-    # Cash actually changed hands, and there was at least this much of it.
-    # Without this a captain could mint wallet credit on a ride the customer
-    # paid entirely from their existing balance.
+    # Cash has to have changed hands, otherwise a captain could mint wallet
+    # credit on a ride the customer paid entirely from their existing balance.
+    # The amount itself is NOT capped by the fare: on a 25 ج.م ride a customer
+    # handing a 100 note is owed 75 back, which is more than the fare.
     cash = Decimal(str(ride.cash_due_egp))
-    if cash <= 0 or amount > cash:
+    if cash <= 0:
         return jsonify({
             "error": "exceeds_cash_due", "cash_due_egp": float(cash),
         }), 400

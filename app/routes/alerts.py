@@ -311,11 +311,19 @@ def assign(alert_id: int):
     # Confirm to the customer on WhatsApp with the captain's full info +
     # persist the outbound message to the conversation inbox. Shared
     # helper — same body as the admin-created ride flow.
-    customer = Customer.query.get(alert.customer_id)
-    from app.services import dispatch_notifications
-    customer_notified = dispatch_notifications.notify_customer_of_assignment(
-        customer, driver
-    )
+    # Office trips are the exception: that customer phoned the office and has
+    # never messaged us, so an unsolicited WhatsApp would be the first thing
+    # they ever hear from Wassalny. The office gets told instead.
+    if ride.source == "office":
+        from app.services import office_dispatch
+        office_dispatch.notify_office_assigned(ride)
+        customer_notified = False
+    else:
+        customer = Customer.query.get(alert.customer_id)
+        from app.services import dispatch_notifications
+        customer_notified = dispatch_notifications.notify_customer_of_assignment(
+            customer, driver
+        )
 
     return jsonify({
         "ride_id": ride.id,

@@ -242,6 +242,12 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     # Note: pending fees are already applied at create_ride time. This param is
     # kept for backward compat but is now a no-op — safe to remove after Phase 3.
 
+    # An office blast reaches captains whose app is closed, so the winner may
+    # still be offline in Redis. Bring him online before marking him busy —
+    # set_online writes available=1, so this order is what makes it stick.
+    if not av.get_presence(driver_id).online:
+        av.set_online(driver_id, ride.from_zone_id)
+
     # Mark driver busy in Redis — they can't take more offers.
     av.set_available(driver_id, False)
 

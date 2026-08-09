@@ -58,6 +58,7 @@ def create_app(config_class=Config):
     from app.routes.reports import reports_bp
     from app.routes.marketing import marketing_bp
     from app.routes.coupons import coupons_bp
+    from app.routes.office_numbers import office_numbers_bp
     from app.routes.audit import audit_bp
     from app.routes.live_map import live_map_bp
     from app.api.v1 import api_v1_bp
@@ -84,6 +85,7 @@ def create_app(config_class=Config):
     app.register_blueprint(reports_bp)
     app.register_blueprint(marketing_bp)
     app.register_blueprint(coupons_bp)
+    app.register_blueprint(office_numbers_bp)
     app.register_blueprint(audit_bp)
     app.register_blueprint(live_map_bp)
     app.register_blueprint(api_v1_bp)
@@ -112,6 +114,7 @@ def create_app(config_class=Config):
     from app.models import wallet as _wl       # noqa: F401
     from app.models import intercity_request as _ic  # noqa: F401
     from app.models import coupon as _cp        # noqa: F401
+    from app.models import office as _of        # noqa: F401
 
     with app.app_context():
         db.create_all()
@@ -120,6 +123,7 @@ def create_app(config_class=Config):
         _bootstrap_zones(app)
         _bootstrap_benha_regions(app)
         _bootstrap_stickers(app)
+        _bootstrap_office_numbers(app)
         _init_firebase_admin(app)
 
     # Background sweeper — catches rides stuck in `broadcasting` because their
@@ -172,6 +176,24 @@ def _bootstrap_stickers(app):
         bootstrap_default_stickers()
     except Exception as e:  # noqa: BLE001
         print(f"[bootstrap] stickers: {e}")
+
+
+def _bootstrap_office_numbers(app):
+    """Seed the known Wassalny office WhatsApp numbers, first boot only.
+
+    Guarded on the table being empty rather than on each number being absent,
+    otherwise a number an admin deliberately deleted would come back on the
+    next deploy.
+    """
+    from app.models.office import OfficeNumber
+
+    if OfficeNumber.query.first() is not None:
+        return
+    for wa_id, label in (("201050084115", "مكتب وصلني"),
+                         ("201012818977", "رقم تجريبي")):
+        db.session.add(OfficeNumber(wa_id=wa_id, label=label, is_active=True))
+    db.session.commit()
+    print("[bootstrap] office numbers seeded: 201050084115, 201012818977")
 
 
 def _apply_lightweight_migrations(app):
@@ -484,10 +506,25 @@ def _apply_lightweight_migrations(app):
                     "ALTER TABLE rides ADD COLUMN coupon_discount_egp "
                     "NUMERIC(8,2) DEFAULT 0 NOT NULL"
                 ))
+
+        # Which office WhatsApp number dispatched this ride, so the accept
+        # confirmation knows where to reply. NULL on app + WhatsApp rides.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS office_wa_id VARCHAR(20)"
+            ))
+        elif dialect == "sqlite":
+            existing = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "office_wa_id" not in existing:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN office_wa_id VARCHAR(20)"
+                ))
     # The wallet tables (customer + driver) are new tables — db.create_all()
     # handles them automatically; no ALTER needed. Print here so we can see it
     # ran on every boot.
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon + office_wa_id ensured")
 
 
 def _init_sentry(app):
