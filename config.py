@@ -74,7 +74,13 @@ class Config:
         os.getenv("OFFICE_NEAREST_WINDOW_SECONDS", "30")
     )
     OFFICE_BLAST_WINDOW_SECONDS = int(
-        os.getenv("OFFICE_BLAST_WINDOW_SECONDS", "45")
+        os.getenv("OFFICE_BLAST_WINDOW_SECONDS", "60")
+    )
+    # Total cap on the retry loop. Every OFFICE_BLAST_WINDOW_SECONDS we
+    # re-query eligible captains and blast again — up to this many seconds
+    # from the first attempt. After that we send "no captain" to the office.
+    OFFICE_BLAST_TOTAL_SECONDS = int(
+        os.getenv("OFFICE_BLAST_TOTAL_SECONDS", "300")
     )
 
     # Business rules (Decisions #10, #14, config §Appendix B)

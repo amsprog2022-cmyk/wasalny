@@ -425,10 +425,14 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
 def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     """Matching for a trip the office took by phone and pasted into WhatsApp.
 
-    Two rounds only — nearest captain, then everybody. The office caller is
-    on the line, so there is no time for the 3/6/10 km ladder that app rides
-    walk through. The fastest-wins guarantee is unchanged: every accept still
-    goes through `try_claim`, the blast only widens the audience.
+    Nearest captain first (one round, GPS only). Then a re-firing blast that
+    re-queries every eligible captain each round for up to
+    OFFICE_BLAST_TOTAL_SECONDS. Re-querying is what catches captains who came
+    online mid-search or just finished a trip — a single-shot blast would
+    freeze them out of a job they'd have taken.
+
+    Fastest-wins guarantee is unchanged: every accept still goes through
+    `try_claim`, the loop just widens the audience over time.
     """
     r = _r()
     ride = db.session.get(Ride, ride_id)
@@ -447,11 +451,35 @@ def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) ->
             int(current_app.config.get("OFFICE_NEAREST_WINDOW_SECONDS", 20)),
         )
 
+    # Blast retry loop — every OFFICE_BLAST_WINDOW_SECONDS we re-query the
+    # eligible captain set and fire another round, until a captain accepts or
+    # OFFICE_BLAST_TOTAL_SECONDS has elapsed. Re-querying each round is what
+    # makes newly-online captains and captains who just finished a trip
+    # actually get pinged instead of being frozen out by the first pass.
     if winner is None:
-        winner = _office_round(
-            ride, _office_blast_candidates(tried), tried, r,
-            int(current_app.config.get("OFFICE_BLAST_WINDOW_SECONDS", 45)),
+        blast_window = int(
+            current_app.config.get("OFFICE_BLAST_WINDOW_SECONDS", 60)
         )
+        total_cap = int(
+            current_app.config.get("OFFICE_BLAST_TOTAL_SECONDS", 300)
+        )
+        started_at = time.time()
+        while winner is None:
+            remaining = total_cap - (time.time() - started_at)
+            if remaining < 5:
+                break
+            # Fresh candidate set each round. `tried` is reset so a captain
+            # who missed the first FCM ping gets pinged again — collapse_key
+            # on the push replaces the stale one, so no notification pileup.
+            candidates = _office_blast_candidates(set())
+            if not candidates:
+                # Nobody eligible right now. Wait a bit and re-query — a
+                # captain finishing a trip in the next 15s should still get
+                # this ride rather than being missed forever.
+                eventlet.sleep(min(15.0, remaining))
+                continue
+            window = min(blast_window, int(remaining))
+            winner = _office_round(ride, candidates, set(), r, window)
 
     r.delete(f"broadcast:{ride.id}:offered_to")
 
