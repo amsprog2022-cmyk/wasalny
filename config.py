@@ -71,7 +71,7 @@ class Config:
     # was asleep.
     OFFICE_NEAREST_RADIUS_KM = float(os.getenv("OFFICE_NEAREST_RADIUS_KM", "10"))
     OFFICE_NEAREST_WINDOW_SECONDS = int(
-        os.getenv("OFFICE_NEAREST_WINDOW_SECONDS", "20")
+        os.getenv("OFFICE_NEAREST_WINDOW_SECONDS", "30")
     )
     OFFICE_BLAST_WINDOW_SECONDS = int(
         os.getenv("OFFICE_BLAST_WINDOW_SECONDS", "45")

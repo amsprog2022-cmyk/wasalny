@@ -67,5 +67,68 @@
       </tbody>
     </table>
   </div>
+
+  <div class="pt-6 border-t border-white/5">
+    <h1 class="text-2xl font-bold">🚚 أرقام الخدمات (سوزوكي / دليفري / تيوتا…)</h1>
+    <p class="text-text-muted text-sm">لما العميل يختار "خدمات تانية" من قايمة الواتس، بنبعت له الأرقام دي عشان يكلم المكتب مباشرة.</p>
+  </div>
+
+  <div class="card">
+    <h2 class="font-bold mb-3">ضيف خدمة</h2>
+    <form method="post" action="{{ url_for('office_numbers.service_new') }}" class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs mb-1 text-white/80">اسم الخدمة</label>
+        <input name="service_label" class="input" required placeholder="سوزوكي، دليفري، تيوتا، سبع راكب، زفاف…" />
+      </div>
+      <div>
+        <label class="block text-xs mb-1 text-white/80">رقم التليفون</label>
+        <input name="phone" class="input" required placeholder="01050084115" dir="ltr" />
+      </div>
+      <div class="col-span-2">
+        <button class="btn-primary">ضيف الخدمة</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card p-0 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-surface-raised text-text-muted">
+        <tr>
+          <th class="text-right px-4 py-3">الخدمة</th>
+          <th class="text-right px-4 py-3">الرقم</th>
+          <th class="text-right px-4 py-3">الحالة</th>
+          <th class="text-right px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in services %}
+          <tr class="border-t border-white/5">
+            <td class="px-4 py-3 font-bold">{{ s.service_label }}</td>
+            <td class="px-4 py-3" dir="ltr">{{ s.phone }}</td>
+            <td class="px-4 py-3">
+              {% if s.is_active %}
+                <span class="text-success">شغالة</span>
+              {% else %}
+                <span class="text-text-muted">متوقفة</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <div class="flex items-center gap-2">
+                <form method="post" action="{{ url_for('office_numbers.service_toggle', number_id=s.id) }}">
+                  <button class="btn-ghost text-xs">{% if s.is_active %}وقّفها{% else %}شغّلها{% endif %}</button>
+                </form>
+                <form method="post" action="{{ url_for('office_numbers.service_delete', number_id=s.id) }}"
+                      onsubmit="return confirm('تمسح خدمة {{ s.service_label }}؟')">
+                  <button class="btn-ghost text-xs text-red-300">مسح</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="px-4 py-8 text-center text-text-muted">مفيش خدمات مسجلة.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}

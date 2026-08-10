@@ -1,16 +1,25 @@
 """WhatsApp service menu + app-promo copy.
 
-Every WhatsApp conversation opens with a tappable list of the two live
-service kinds. Whichever the customer picks is stashed on the AiSession
-and drives the rest of the booking:
+Every WhatsApp conversation opens with a tappable list of four rows.
+Two of them start a ride (`service_kind`) and drive the whole booking
+state machine:
 
   private   → auto-broadcast to the nearest captains (the original flow)
   intercity → never matched to a captain. The customer's free text is
               filed on the /intercity admin board and someone calls back.
 
+The other two never touch the ride table — they hand back an "info"
+action string that the booking pipeline uses to short-circuit:
+
+  services → send back the depot phone numbers from ServiceNumber and
+             end the session, so the customer calls Suzuki/delivery/etc
+             directly.
+  inquiry  → file an AdminAlert(kind="inquiry") and reply "someone will
+             call you." No captain, no phone list — just a queued callback.
+
 Customers on old WhatsApp builds see the list as plain text and type
-their answer instead, so `match_service_kind` also accepts the number,
-the Arabic name, and common misspellings.
+their answer instead, so `match_service_kind` / `match_info_action`
+also accept the number, the Arabic name, and common misspellings.
 """
 from __future__ import annotations
 
@@ -28,13 +37,20 @@ IOS_URL = "https://apps.apple.com/eg/app/wasalny-benha/id6792322962"
 
 # Row IDs come back verbatim in the webhook's list_reply payload.
 ROW_ID_PREFIX = "svc_"
+INFO_ID_PREFIX = "info_"
 
+# Every row carries either a `kind` (starts a ride) or an `info` (short-
+# circuits into a canned handler that never touches the ride table). Exactly
+# one of the two is set per row.
 MENU_ROWS = [
-    {"id": f"{ROW_ID_PREFIX}private",   "kind": "private",   "title": "🚗 ملاكي داخل بنها", "description": "عربية خاصة توصلك جوه بنها"},
-    {"id": f"{ROW_ID_PREFIX}intercity", "kind": "intercity", "title": "🛣️ سفر خارج بنها",   "description": "ملاكي للسفر برة بنها"},
+    {"id": f"{ROW_ID_PREFIX}private",   "kind": "private",   "info": None,       "title": "ملاكي داخل بنها 🚗", "description": "عربية خاصة توصلك جوه بنها"},
+    {"id": f"{ROW_ID_PREFIX}intercity", "kind": "intercity", "info": None,       "title": "سفر خارج بنها 🛣️",  "description": "ملاكي للسفر برة بنها"},
+    {"id": f"{INFO_ID_PREFIX}services", "kind": None,        "info": "services", "title": "خدمات تانية 🚚",    "description": "سوزوكي، دليفري، تيوتا، سبع راكب، زفاف"},
+    {"id": f"{INFO_ID_PREFIX}inquiry",  "kind": None,        "info": "inquiry",  "title": "استفسارات ℹ️",      "description": "استفسار عام لحد من الإدارة"},
 ]
 
-_ROW_ID_TO_KIND = {r["id"]: r["kind"] for r in MENU_ROWS}
+_ROW_ID_TO_KIND = {r["id"]: r["kind"] for r in MENU_ROWS if r["kind"]}
+_ROW_ID_TO_INFO = {r["id"]: r["info"] for r in MENU_ROWS if r["info"]}
 
 # Typed fallbacks. Keys are already Arabic-normalized + lowercased.
 # suzuki/delivery/vip are gone from the menu, so their old numbers must
@@ -42,6 +58,17 @@ _ROW_ID_TO_KIND = {r["id"]: r["kind"] for r in MENU_ROWS}
 _TEXT_ALIASES = {
     "private":   ["1", "١", "ملاكي", "ملاكى", "عربيه", "عربية", "خاصه", "تاكسي", "taxi", "private", "car"],
     "intercity": ["2", "٢", "سفر", "سفريه", "سفرية", "خارج بنها", "بره بنها", "برة بنها", "travel", "intercity"],
+}
+
+# Info rows also accept typed replies. Keep them short and unambiguous —
+# "سوزوكي لو سمحت" is a customer picking option 3, not a booking sentence.
+_INFO_TEXT_ALIASES = {
+    "services": [
+        "3", "٣", "خدمات", "خدمه", "خدمة",
+        "سوزوكي", "توك توك", "توكتوك", "دليفري", "دليڤري", "توصيل",
+        "تيوتا", "تويوتا", "سبع راكب", "٧ راكب", "7 راكب", "زفاف", "فرح",
+    ],
+    "inquiry":  ["4", "٤", "استفسار", "استفسارات", "سؤال", "مشكله", "مشكلة", "شكوى"],
 }
 
 # Only these may match inside a longer reply. The rest are everyday words
@@ -55,15 +82,23 @@ _SUBSTRING_ALIASES = {
     "private":   ["ملاكي", "ملاكى"],
 }
 
+_INFO_LABELS_AR = {
+    "services": "خدمات تانية",
+    "inquiry":  "استفسارات",
+}
+
 # Normalize the alias tables once at import so lookups are cheap.
 _TEXT_ALIASES = {k: [_normalize(a) for a in v] for k, v in _TEXT_ALIASES.items()}
+_INFO_TEXT_ALIASES = {k: [_normalize(a) for a in v] for k, v in _INFO_TEXT_ALIASES.items()}
 _SUBSTRING_ALIASES = {k: [_normalize(a) for a in v] for k, v in _SUBSTRING_ALIASES.items()}
 
 MENU_BODY = (
-    "اهلا بيك في وصلني بنها\n\n"
+    "اهلا بيك.\n\n"
     "محتاج ايه؟\n"
     "١. عربية ملاكي داخل بنها\n"
-    "٢. محتاج عربية ملاكي للسفر خارج بنها\n\n"
+    "٢. محتاج عربية للسفر خارج بنها\n"
+    "٣. لخدمة السوزوكي والدليفري والتيوتا والسبع راكب والزفاف\n"
+    "٤. للاستفسارات\n\n"
     "دوس على الزرار تحت واختار، أو ابعتلنا رقم الخدمة"
 )
 
@@ -71,8 +106,15 @@ PROMO_THROTTLE_DAYS = 7
 
 
 def kind_from_row_id(row_id: str) -> str | None:
-    """Map a tapped list-reply id back to a service_kind slug."""
+    """Map a tapped list-reply id back to a service_kind slug (or None
+    if the row is an info row rather than a ride starter)."""
     return _ROW_ID_TO_KIND.get((row_id or "").strip())
+
+
+def info_action_from_row_id(row_id: str) -> str | None:
+    """Map a tapped list-reply id back to an info-action ('services' /
+    'inquiry'). Returns None when the row starts a ride instead."""
+    return _ROW_ID_TO_INFO.get((row_id or "").strip())
 
 
 def match_service_kind(text: str) -> str | None:
@@ -99,8 +141,25 @@ def match_service_kind(text: str) -> str | None:
     return None
 
 
+def match_info_action(text: str) -> str | None:
+    """Same as `match_service_kind` but for the two info rows (services /
+    inquiry). Exact-match only, so a booking sentence like "عايز سوزوكي
+    من محطة القطار" doesn't get swallowed as an info tap."""
+    norm = _normalize(text or "")
+    if not norm or len(norm) > 25:
+        return None
+    for action, aliases in _INFO_TEXT_ALIASES.items():
+        if norm in aliases:
+            return action
+    return None
+
+
 def label_ar(kind: str) -> str:
     return SERVICE_KIND_LABELS_AR.get(kind, kind)
+
+
+def info_label_ar(action: str) -> str:
+    return _INFO_LABELS_AR.get(action, action)
 
 
 def send_service_menu(customer: Customer) -> None:
@@ -117,7 +176,6 @@ def send_service_menu(customer: Customer) -> None:
             body=MENU_BODY,
             button_text="اختار الخدمة",
             rows=[{k: r[k] for k in ("id", "title", "description")} for r in MENU_ROWS],
-            header="وصلني بنها",
             footer="خدمة 24 ساعة في بنها",
             section_title="خدماتنا",
         )

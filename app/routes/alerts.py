@@ -42,7 +42,9 @@ def index():
     handoffs = [a for a in open_alerts if a.kind == "ai_handoff"]
     no_driver = [a for a in open_alerts if a.kind == "no_driver"]
     service_requests = [a for a in open_alerts if a.kind == "service_request"]
-    other = [a for a in open_alerts if a.kind not in ("ai_handoff", "no_driver", "service_request")]
+    inquiries = [a for a in open_alerts if a.kind == "inquiry"]
+    other = [a for a in open_alerts if a.kind not in
+             ("ai_handoff", "no_driver", "service_request", "inquiry")]
 
     # Preload customer info for handoff rows
     cust_ids = {a.customer_id for a in open_alerts if a.customer_id}
@@ -61,6 +63,7 @@ def index():
         handoffs=handoffs,
         no_driver=no_driver,
         service_requests=service_requests,
+        inquiries=inquiries,
         other=other,
         customers=customers,
         rides=rides,

@@ -331,8 +331,9 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
         # Proactive "we're searching" message — matches the plan-approved UX
         # decision so the customer isn't left in silence for 2-3 min.
         ack = (
-            f"🚗 تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
+            f"تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
             + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address else ".")
+            + " 🚗"
         )
         _try_send(customer.wa_id, ack, customer=customer)
         matching.start_matching(ride.id, pending_fee_ids=pending_ids)
@@ -359,7 +360,8 @@ def _next_question(session: AiSession) -> str:
     if session.partial_pickup_lat is None or session.partial_pickup_lng is None:
         return (
             "📍 حضرتك فين دلوقتي؟\n"
-            "اكتبلي اسم المكان، أو ابعتلي موقعك من الواتس: 📎 ← Location ← Send your current location."
+            "اكتبلي اسم المكان، أو ابعت موقعك من الواتس بالخطوات دي:\n"
+            "دوس على 📎 المرفقات ← الموقع ← ابعت موقعك الحالي."
         )
     if (session.service_kind or "private") == "delivery":
         return "📦 الطلب رايح فين؟ اكتبلي العنوان."
@@ -398,6 +400,75 @@ def _apply_service_choice(
         customer=customer,
     )
     return {"handled": True, "action": "service_chosen", "service_kind": kind}
+
+
+def _send_service_numbers(customer: Customer, session: AiSession) -> dict:
+    """Reply with the depot phone numbers admins keep on /office-numbers.
+
+    Ends the AiSession — this row doesn't create a ride, we're just
+    handing the customer a list so they call the depot themselves.
+    """
+    from app.models.office import ServiceNumber
+
+    numbers = (
+        ServiceNumber.query.filter_by(is_active=True)
+        .order_by(ServiceNumber.id.asc()).all()
+    )
+    if numbers:
+        lines = ["📞 كلم مباشرة على الأرقام دي:", ""]
+        for n in numbers:
+            lines.append(f"• {n.service_label}: {n.phone}")
+        body = "\n".join(lines)
+    else:
+        body = (
+            "معلش، لسه مفيش أرقام مسجلة للخدمات دي. "
+            "لو حابب حد من الإدارة يكلمك ابعت رقم 4."
+        )
+    _try_send(customer.wa_id, body, customer=customer)
+    session.status = "completed"
+    db.session.commit()
+    return {"handled": True, "action": "service_numbers_sent"}
+
+
+def _file_inquiry(customer: Customer, session: AiSession) -> dict:
+    """Queue an admin callback for a general inquiry.
+
+    No ride, no captain, no phone list — just an AdminAlert(kind="inquiry")
+    with the customer's info so someone on the admin dashboard calls back.
+    """
+    alert = AdminAlert(
+        kind="inquiry",
+        payload_json=json.dumps({
+            "wa_id": customer.wa_id,
+            "customer_name": customer.name or "",
+        }, ensure_ascii=False),
+        customer_id=customer.id,
+    )
+    db.session.add(alert)
+    session.status = "completed"
+    db.session.commit()
+
+    _try_send(
+        customer.wa_id,
+        "سيتم التواصل معكم من احد افراد الإدارة.",
+        customer=customer,
+    )
+    try:
+        socketio.emit(
+            "ai_alert_new",
+            {
+                "id": alert.id,
+                "customer_id": customer.id,
+                "customer_wa_id": customer.wa_id,
+                "customer_name": customer.name or customer.wa_id,
+                "reason": "inquiry",
+                "message": "استفسار",
+            },
+            namespace="/inbox",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("inquiry alert emit failed: %s", e)
+    return {"handled": True, "action": "inquiry_filed", "alert_id": alert.id}
 
 
 def _file_intercity_request(customer: Customer, session: AiSession, text: str) -> dict:
@@ -474,6 +545,7 @@ def process_incoming(customer: Customer, payload) -> dict:
 
     kind = payload.get("kind")
     chosen_kind: str | None = None
+    chosen_info: str | None = None
     if kind == "text":
         message_body = (payload.get("body") or "").strip()
         if not message_body:
@@ -486,10 +558,14 @@ def process_incoming(customer: Customer, payload) -> dict:
             return {"handled": False, "reason": "bad_location"}
         message_body = f"📍 {pin_lat:.6f},{pin_lng:.6f}"
     elif kind == "menu_choice":
-        chosen_kind = wa_menu.kind_from_row_id(payload.get("row_id") or "")
-        if chosen_kind is None:
+        row_id = (payload.get("row_id") or "").strip()
+        chosen_kind = wa_menu.kind_from_row_id(row_id)
+        chosen_info = wa_menu.info_action_from_row_id(row_id)
+        if chosen_kind is None and chosen_info is None:
             return {"handled": False, "reason": "unknown_row"}
-        message_body = f"[{wa_menu.label_ar(chosen_kind)}]"
+        label = (wa_menu.label_ar(chosen_kind) if chosen_kind
+                 else wa_menu.info_label_ar(chosen_info))
+        message_body = f"[{label}]"
     else:
         return {"handled": False, "reason": "unknown_kind"}
 
@@ -515,8 +591,14 @@ def process_incoming(customer: Customer, payload) -> dict:
     session = _get_or_open_session(customer.id, customer.wa_id)
     session.touch(_ttl_minutes())
 
-    # MENU TAP — the customer picked a service off the interactive list.
+    # MENU TAP — the customer picked a row off the interactive list. Info
+    # rows (services / inquiry) short-circuit before we ever touch the ride
+    # pipeline, so they don't create an AiSession.service_kind.
     if kind == "menu_choice":
+        if chosen_info == "services":
+            return _send_service_numbers(customer, session)
+        if chosen_info == "inquiry":
+            return _file_inquiry(customer, session)
         return _apply_service_choice(customer, session, chosen_kind)
 
     # INTERCITY — the customer already answered "منين لفين؟". Whatever they
@@ -540,6 +622,12 @@ def process_incoming(customer: Customer, payload) -> dict:
             db.session.commit()
             wa_menu.send_service_menu(customer)
             return {"handled": True, "action": "menu_sent"}
+
+        typed_info = wa_menu.match_info_action(message_body)
+        if typed_info == "services":
+            return _send_service_numbers(customer, session)
+        if typed_info == "inquiry":
+            return _file_inquiry(customer, session)
 
         typed = wa_menu.match_service_kind(message_body)
         if typed:
@@ -612,8 +700,8 @@ def process_incoming(customer: Customer, payload) -> dict:
         elif active_ride:
             _try_send(
                 customer.wa_id,
-                f"🚗 حالة رحلتك: {active_ride['status']} من {active_ride['from_zone_ar']} "
-                f"إلى {active_ride['to_zone_ar']}",
+                f"حالة رحلتك: {active_ride['status']} من {active_ride['from_zone_ar']} "
+                f"إلى {active_ride['to_zone_ar']} 🚗",
                 customer=customer,
             )
         return {"handled": True, "action": "ride_status"}
@@ -720,8 +808,8 @@ def process_incoming(customer: Customer, payload) -> dict:
         hint = f" (اللي لقيته: {pickup_ambiguous_label})" if pickup_ambiguous_label else ""
         _try_send(
             customer.wa_id,
-            "معلش، مش قادر أحدد مكانك بالظبط" + hint + "."
-            "\nممكن تبعتلي 📍 من الواتس؟ دوس على 📎 → Location → Send your current location.",
+            "معلش، مش قادر أحدد مكانك بالظبط" + hint + ".\n"
+            "يرجى إرسال موقعك: دوس على 📎 المرفقات ← الموقع ← ابعت موقعك الحالي.",
             customer=customer,
         )
         return {"handled": True, "action": "await_pin"}

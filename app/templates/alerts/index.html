@@ -134,6 +134,52 @@
     </div>
   </section>
 
+  {# ---------- General inquiries (option 4 on the WhatsApp menu) ---------- #}
+  <section class="mb-6">
+    <h2 class="font-bold mb-3">
+      ℹ️ استفسارات محتاجة اتصال
+      <span class="text-text-muted text-sm">({{ inquiries|length }})</span>
+    </h2>
+    <div class="card p-0 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-surface-raised text-text-muted">
+          <tr>
+            <th class="text-right px-4 py-3">إمتى</th>
+            <th class="text-right px-4 py-3">العميل</th>
+            <th class="text-right px-4 py-3">الرقم</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in inquiries %}
+            {% set c = customers.get(a.customer_id) %}
+            <tr class="border-t border-white/5">
+              <td class="px-4 py-3 text-text-muted whitespace-nowrap">{{ a.created_at.strftime('%H:%M · %d %b') }}</td>
+              <td class="px-4 py-3">
+                {% if c %}{{ c.name or c.wa_id }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3" dir="ltr">
+                {% if c and c.wa_id %}
+                  📞 <a href="tel:+{{ c.wa_id }}" class="text-primary hover:underline">+{{ c.wa_id }}</a>
+                {% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-3 text-left whitespace-nowrap">
+                <form method="post" action="{{ url_for('alerts.take_over', alert_id=a.id) }}" class="inline">
+                  <button class="btn-ghost" style="padding: 6px 10px; font-size: 12px;">افتح المحادثة</button>
+                </form>
+                <form method="post" action="{{ url_for('alerts.resolve', alert_id=a.id) }}" class="inline">
+                  <button class="btn-ghost" style="padding: 6px 14px; font-size: 12px;">تم</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="px-4 py-8 text-center text-text-muted">مفيش استفسارات دلوقتي.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section>
     <h2 class="font-bold mb-3">🚗 رحلات مالقيتش لها كابتن <span class="text-text-muted text-sm">({{ no_driver|length }})</span></h2>
     <div class="card p-0 overflow-hidden">
