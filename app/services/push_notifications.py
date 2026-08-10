@@ -84,49 +84,100 @@ def _send(token: Optional[str], title: str, body: str, data: dict | None = None,
 
     # FCM data payload values must all be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
-    # Route trip offers into the captain app's high-priority ride_offer
-    # channel so the notification triggers the full-screen incoming-ride
-    # alarm. All other pushes stay on the default channel.
     is_ride_offer = string_data.get("kind") == "trip_offered"
-    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
 
     try:
-        message = m.Message(
+        message = _build_message(
+            m, string_data, title=title, body=body,
+            collapse_key=collapse_key, is_ride_offer=is_ride_offer,
             token=token,
-            notification=m.Notification(title=title, body=body),
-            data=string_data,
-            android=m.AndroidConfig(
-                priority="high",
-                collapse_key=collapse_key,
-                notification=m.AndroidNotification(
-                    sound="default",
-                    channel_id=channel_id,
-                ),
-            ),
-            apns=m.APNSConfig(
-                # Time-sensitive interruption for ride offers so they punch
-                # through iOS Focus modes. Passed via custom_data (which
-                # merges into the raw `aps` payload dict) because older
-                # firebase-admin builds don't accept it as an Aps kwarg.
-                headers={"apns-priority": "10"},
-                payload=m.APNSPayload(
-                    aps=m.Aps(
-                        sound="default",
-                        content_available=True,
-                        mutable_content=True,
-                        custom_data=(
-                            {"interruption-level": "time-sensitive"}
-                            if is_ride_offer else None
-                        ),
-                    ),
-                ),
-            ),
         )
         m.send(message)
         return True
     except Exception as e:  # noqa: BLE001
         current_app.logger.warning("FCM send failed: %s", e)
         return False
+
+
+def _build_message(m, string_data: dict, *, title: str, body: str,
+                   collapse_key: str | None, is_ride_offer: bool,
+                   token: str | None = None, tokens: list | None = None):
+    """Build the FCM message with the platform overrides the client needs.
+
+    Trip-offered pushes are **data-only on Android**. That's what lets the
+    Dart _backgroundMessageHandler in main.dart fire when the app is killed,
+    which is what triggers the full-screen ride-offer alarm. If we sent a
+    top-level notification, the OS would render a normal quiet notification
+    itself and skip the background handler entirely — the exact bug where
+    a killed captain phone shows a silent push instead of a ringing alarm.
+
+    iOS can't render a data-only push (no banner appears), so we mirror the
+    title/body into the APNS alert block so iOS still notifies. Everything
+    that isn't a trip offer keeps the old notification+data shape.
+    """
+    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
+
+    if is_ride_offer:
+        # Preserve title/body inside data — the Dart killed-state handler
+        # reads data['title'] / data['body'] to render its own alarm.
+        string_data.setdefault("title", title)
+        string_data.setdefault("body", body)
+
+        android_cfg = m.AndroidConfig(
+            priority="high",
+            collapse_key=collapse_key,
+            # NO android.notification block — that's what keeps the payload
+            # data-only on Android and forces the background handler to run.
+        )
+        apns_cfg = m.APNSConfig(
+            headers={"apns-priority": "10"},
+            payload=m.APNSPayload(
+                aps=m.Aps(
+                    alert=m.ApsAlert(title=title, body=body),
+                    sound="default",
+                    content_available=True,
+                    mutable_content=True,
+                    custom_data={"interruption-level": "time-sensitive"},
+                ),
+            ),
+        )
+        notification_arg = None
+    else:
+        android_cfg = m.AndroidConfig(
+            priority="high",
+            collapse_key=collapse_key,
+            notification=m.AndroidNotification(
+                sound="default",
+                channel_id=channel_id,
+            ),
+        )
+        apns_cfg = m.APNSConfig(
+            headers={"apns-priority": "10"},
+            payload=m.APNSPayload(
+                aps=m.Aps(
+                    sound="default",
+                    content_available=True,
+                    mutable_content=True,
+                ),
+            ),
+        )
+        notification_arg = m.Notification(title=title, body=body)
+
+    if tokens is not None:
+        return m.MulticastMessage(
+            tokens=tokens,
+            notification=notification_arg,
+            data=string_data,
+            android=android_cfg,
+            apns=apns_cfg,
+        )
+    return m.Message(
+        token=token,
+        notification=notification_arg,
+        data=string_data,
+        android=android_cfg,
+        apns=apns_cfg,
+    )
 
 
 def send_to_customer(customer_id: int, *, title: str, body: str,
@@ -162,43 +213,19 @@ def _send_multicast(tokens: list[str], title: str, body: str,
 
     string_data = {k: str(v) for k, v in (data or {}).items()}
     is_ride_offer = string_data.get("kind") == "trip_offered"
-    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
 
     sent = 0
     dead: list[str] = []
     for i in range(0, len(tokens), _MULTICAST_CHUNK):
         chunk = tokens[i:i + _MULTICAST_CHUNK]
         try:
-            message = m.MulticastMessage(
+            # A copy per chunk so setdefault('title'/'body') for trip-offered
+            # doesn't compound across iterations (harmless but tidy).
+            per_chunk_data = dict(string_data)
+            message = _build_message(
+                m, per_chunk_data, title=title, body=body,
+                collapse_key=collapse_key, is_ride_offer=is_ride_offer,
                 tokens=chunk,
-                notification=m.Notification(title=title, body=body),
-                data=string_data,
-                android=m.AndroidConfig(
-                    priority="high",
-                    collapse_key=collapse_key,
-                    notification=m.AndroidNotification(
-                        sound="default",
-                        channel_id=channel_id,
-                    ),
-                ),
-                apns=m.APNSConfig(
-                    # Same custom_data workaround as _send: firebase-admin
-                    # 6.5.0's Aps has no interruption_level kwarg, and passing
-                    # one raises TypeError whatever its value — which the
-                    # per-chunk except would swallow, silently delivering zero.
-                    headers={"apns-priority": "10"},
-                    payload=m.APNSPayload(
-                        aps=m.Aps(
-                            sound="default",
-                            content_available=True,
-                            mutable_content=True,
-                            custom_data=(
-                                {"interruption-level": "time-sensitive"}
-                                if is_ride_offer else None
-                            ),
-                        ),
-                    ),
-                ),
             )
             resp = m.send_each_for_multicast(message)
             sent += int(resp.success_count or 0)
