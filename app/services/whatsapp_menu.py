@@ -45,7 +45,7 @@ INFO_ID_PREFIX = "info_"
 MENU_ROWS = [
     {"id": f"{ROW_ID_PREFIX}private",   "kind": "private",   "info": None,       "title": "ملاكي داخل بنها 🚗", "description": "عربية خاصة توصلك جوه بنها"},
     {"id": f"{ROW_ID_PREFIX}intercity", "kind": "intercity", "info": None,       "title": "سفر خارج بنها 🛣️",  "description": "ملاكي للسفر برة بنها"},
-    {"id": f"{INFO_ID_PREFIX}services", "kind": None,        "info": "services", "title": "خدمات تانية 🚚",    "description": "سوزوكي، دليفري، تيوتا، سبع راكب، زفاف"},
+    {"id": f"{INFO_ID_PREFIX}services", "kind": None,        "info": "services", "title": "للخدمات الاخري 🚚", "description": "سوزوكي، دليفري، تيوتا، سبع راكب، زفاف"},
     {"id": f"{INFO_ID_PREFIX}inquiry",  "kind": None,        "info": "inquiry",  "title": "استفسارات ℹ️",      "description": "استفسار عام لحد من الإدارة"},
 ]
 
@@ -83,7 +83,7 @@ _SUBSTRING_ALIASES = {
 }
 
 _INFO_LABELS_AR = {
-    "services": "خدمات تانية",
+    "services": "الخدمات الاخري",
     "inquiry":  "استفسارات",
 }
 
@@ -97,7 +97,7 @@ MENU_BODY = (
     "محتاج ايه؟\n"
     "١. عربية ملاكي داخل بنها\n"
     "٢. محتاج عربية للسفر خارج بنها\n"
-    "٣. لخدمة السوزوكي والدليفري والتيوتا والسبع راكب والزفاف\n"
+    "٣. للخدمات الاخري (سوزوكي، دليفري، تيوتا، سبع راكب، زفاف)\n"
     "٤. للاستفسارات\n\n"
     "دوس على الزرار تحت واختار، أو ابعتلنا رقم الخدمة"
 )

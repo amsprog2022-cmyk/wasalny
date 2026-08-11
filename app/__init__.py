@@ -124,6 +124,7 @@ def create_app(config_class=Config):
         _bootstrap_benha_regions(app)
         _bootstrap_stickers(app)
         _bootstrap_office_numbers(app)
+        _bootstrap_service_numbers(app)
         _init_firebase_admin(app)
 
     # Background sweeper — catches rides stuck in `broadcasting` because their
@@ -194,6 +195,30 @@ def _bootstrap_office_numbers(app):
         db.session.add(OfficeNumber(wa_id=wa_id, label=label, is_active=True))
     db.session.commit()
     print("[bootstrap] office numbers seeded: 201050084115, 201012818977")
+
+
+def _bootstrap_service_numbers(app):
+    """Seed the depot phone numbers the WhatsApp bot sends when a customer
+    picks "للخدمات الاخري" (menu option 3), first boot only. Same empty-
+    table guard as office numbers so a deleted row doesn't reappear.
+    """
+    from app.models.office import ServiceNumber
+
+    if ServiceNumber.query.first() is not None:
+        return
+    rows = [
+        ("خدمة الدليفري توصيل طلبات وأشخاص بالاسكوتر", "01050084116"),
+        ("خدمة السوزوكي",                              "01050084117"),
+        ("خدمة ال 7 راكب مكيف بشبكة",                  "01050084118"),
+        ("خدمة التيوتا ال 14 راكب",                    "01050084114"),
+        ("خدمة عربيات الزفاف",                          "01044666996"),
+    ]
+    for label, phone in rows:
+        db.session.add(ServiceNumber(
+            service_label=label, phone=phone, is_active=True,
+        ))
+    db.session.commit()
+    print(f"[bootstrap] service numbers seeded: {len(rows)}")
 
 
 def _apply_lightweight_migrations(app):
