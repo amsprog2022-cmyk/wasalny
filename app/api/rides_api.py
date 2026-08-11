@@ -1784,8 +1784,13 @@ def rides_arrived_set_destination(ride_id: int):
     except (TypeError, KeyError, ValueError):
         return jsonify({"error": "dropoff_lat + dropoff_lng required"}), 400
 
-    # Captain's live GPS = pickup. Fall back to the driver row snapshot
-    # (older when the captain isn't actively heartbeating).
+    # Captain's live GPS = pickup. Three sources in falling order of
+    # freshness: Redis GEO (updated on every socket driver_position ping),
+    # then the driver row snapshot, then the captain_lat/lng the app can
+    # send in the request body from its own location provider. The body
+    # fallback is what saves office trips where the captain went from
+    # offline → busy in one accept and LocationService only just started
+    # (no ping has reached the backend yet).
     from app.services import availability as av
     from app.services import reverse_geocode as rg
     pos = av.get_position(did)
@@ -1793,6 +1798,14 @@ def rides_arrived_set_destination(ride_id: int):
         drv = db.session.get(Driver, did)
         if drv and drv.latitude is not None and drv.longitude is not None:
             pos = (float(drv.latitude), float(drv.longitude))
+    if pos is None:
+        try:
+            body_lat = data.get("captain_lat")
+            body_lng = data.get("captain_lng")
+            if body_lat is not None and body_lng is not None:
+                pos = (float(body_lat), float(body_lng))
+        except (TypeError, ValueError):
+            pass
     if pos is None:
         return jsonify({"error": "no_captain_gps"}), 409
     plat, plng = pos
