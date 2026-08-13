@@ -767,6 +767,17 @@ def process_incoming(customer: Customer, payload) -> dict:
     if result.dropoff_text:
         _resolve_dropoff_from_text(session, result.dropoff_text)
 
+    # Fallback for the "بنها" case: pickup already pinned, we've clearly
+    # asked "رايح فين؟", customer replied with a short place name, but
+    # Gemini didn't pull it into dropoff_text. Use the raw message as the
+    # destination text so the customer doesn't get stuck in a loop of the
+    # bot asking the same question after every one-word answer.
+    if (session.partial_pickup_lat is not None
+            and not session.partial_dropoff_text
+            and message_body
+            and 2 <= len(message_body) <= 60):
+        _resolve_dropoff_from_text(session, message_body)
+
     pickup_confident = (
         session.partial_pickup_lat is not None and session.partial_pickup_lng is not None
     )
@@ -775,6 +786,15 @@ def process_incoming(customer: Customer, payload) -> dict:
         pickup_confident, pickup_ambiguous_label = _resolve_pickup_from_text(
             session, result.pickup_text,
         )
+
+    # Try to book BEFORE the clarify handler — the fallback above may have
+    # just filled in the missing dropoff, in which case Gemini's "I need
+    # more info" verdict is stale. Book if we now have everything;
+    # otherwise fall through to the clarify reply.
+    if pickup_confident:
+        booked = _try_book_ride(customer, session)
+        if booked:
+            return booked
 
     # Explicit clarify path — Gemini decided we need one more question.
     if result.intent == "clarify":
