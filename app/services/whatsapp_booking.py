@@ -282,15 +282,11 @@ def _log_gemini_call(
 def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     """Fire ride_lifecycle.create_ride when we have enough session state.
 
-    Always requires pickup coords. What else is required depends on the
-    service the customer picked off the menu:
-
-      private       — dropoff optional; the captain agrees the destination
-                      and price on arrival, same as the legacy flow.
-      non-private   — dropoff required, because nobody auto-matches these.
-                      An admin reads both ends off the alert board and
-                      dispatches by hand, so a half-filled request just
-                      means a phone call back to the customer.
+    Always requires both pickup coords AND a destination the customer
+    typed. Private rides now get their destination up-front (auto-priced,
+    dispatched to the captain from → to just like an app booking) rather
+    than deferring to the captain-on-arrival flow. Non-private kinds stay
+    the same — the admin needs both ends to dispatch by hand.
 
     Returns a small dict on success, or None if we still need more info.
     """
@@ -300,7 +296,11 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     kind = session.service_kind or "private"
     is_private = kind == "private"
 
-    if not is_private and not session.partial_dropoff_text:
+    # Both trip kinds now need a typed destination. Geocoded coords are
+    # nice-to-have — if the geocoder missed on private, we still book
+    # (captain will confirm with the customer at pickup) but the address
+    # string is required so the captain knows where he's going.
+    if not session.partial_dropoff_text:
         return None
 
     _try_send_sticker(customer.wa_id, "booked", customer=customer)
@@ -329,13 +329,17 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
 
     if is_private:
         # Proactive "we're searching" message — matches the plan-approved UX
-        # decision so the customer isn't left in silence for 2-3 min.
-        ack = (
-            f"تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"
-            + (f" لينزلك في {ride.dropoff_address}." if ride.dropoff_address else ".")
-            + " 🚗"
-        )
-        _try_send(customer.wa_id, ack, customer=customer)
+        # decision so the customer isn't left in silence for 2-3 min. Also
+        # quotes the calculated price up-front when both ends are geocoded,
+        # so the customer knows what they'll pay before the captain arrives.
+        parts = [f"تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"]
+        if ride.dropoff_address:
+            parts.append(f" لينزلك في {ride.dropoff_address}")
+        parts.append(".")
+        if ride.price_egp and float(ride.price_egp) > 0:
+            parts.append(f"\nسعر الرحلة: {float(ride.price_egp):.0f} ج.م")
+        parts.append(" 🚗")
+        _try_send(customer.wa_id, "".join(parts), customer=customer)
         matching.start_matching(ride.id, pending_fee_ids=pending_ids)
     else:
         dest = ride.dropoff_address or session.partial_dropoff_text
@@ -355,8 +359,8 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
 
 def _next_question(session: AiSession) -> str:
     """The one thing we still need from the customer, phrased for their
-    chosen service. Pickup always comes first; a destination is only ever
-    asked for on the admin-dispatched kinds."""
+    chosen service. Pickup always comes first, then destination — every
+    kind (private included) now needs both before we dispatch."""
     if session.partial_pickup_lat is None or session.partial_pickup_lng is None:
         return (
             "📍 حضرتك فين دلوقتي؟\n"
@@ -415,9 +419,12 @@ def _send_service_numbers(customer: Customer, session: AiSession) -> dict:
         .order_by(ServiceNumber.id.asc()).all()
     )
     if numbers:
-        lines = ["📞 كلم مباشرة على الأرقام دي:", ""]
+        lines = ["لخدمات وصلني الاخري:", ""]
         for n in numbers:
-            lines.append(f"• {n.service_label}: {n.phone}")
+            lines.append(n.service_label)
+            lines.append(n.phone)
+            lines.append("")
+        lines.append("كلمنا مباشر واتس أو اتصال علي الأرقام دى.")
         body = "\n".join(lines)
     else:
         body = (
