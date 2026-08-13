@@ -368,8 +368,8 @@ def _next_question(session: AiSession) -> str:
             "دوس على 📎 المرفقات ← الموقع ← ابعت موقعك الحالي."
         )
     if (session.service_kind or "private") == "delivery":
-        return "📦 الطلب رايح فين؟ اكتبلي العنوان."
-    return "🏁 رايح فين؟ اكتبلي اسم المكان."
+        return "الطلب رايح فين؟ اكتبلي العنوان. 📦"
+    return "رايح فين؟ اكتبلي اسم المكان. 🏁"
 
 
 def _apply_service_choice(
@@ -510,7 +510,9 @@ def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str 
     On ambiguous / miss: leaves lat/lng untouched, returns (False, None).
     """
     session.partial_pickup_text = text
-    hit = rg.geocode_pickup(text)
+    # Scope to Benha — same reasoning as _resolve_dropoff_from_text below.
+    q = text if "بنها" in text else f"{text} بنها"
+    hit = rg.geocode_pickup(q)
     if hit is None:
         return False, None
     if not hit.get("confident"):
@@ -523,9 +525,15 @@ def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str 
 def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
     """Geocode dropoff best-effort. Any hit is fine — the captain confirms
     with the customer at pickup, and pricing is coord-based only when we
-    have both ends. Missing dropoff coords just falls back to captain-set."""
+    have both ends. Missing dropoff coords just falls back to captain-set.
+
+    We scope the search to Benha: if the customer typed just "منشية" we
+    query "منشية بنها" so Nominatim doesn't return a hit in Alexandria.
+    Nothing added when the text already mentions Benha.
+    """
     session.partial_dropoff_text = text
-    results = rg.search_places(text, limit=1)
+    q = text if "بنها" in text else f"{text} بنها"
+    results = rg.search_places(q, limit=1)
     if results:
         session.partial_dropoff_lat = results[0]["lat"]
         session.partial_dropoff_lng = results[0]["lng"]
