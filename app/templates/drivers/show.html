@@ -124,7 +124,7 @@
               <td class="py-2"><a href="{{ url_for('rides.show', ride_id=r.id) }}" class="text-primary hover:underline">#{{ r.id }}</a></td>
               <td class="py-2">{{ r.from_zone.name_ar if r.from_zone else '—' }} ← {{ r.to_zone.name_ar if r.to_zone else '—' }}</td>
               <td class="py-2 font-mono">{{ '%.0f'|format(r.price_egp) }} ج.م</td>
-              <td class="py-2">{{ {'completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش','assigned':'اتوزعت','started':'شغالة','broadcasting':'بندور','new':'جديدة'}.get(r.status, r.status) }}</td>
+              <td class="py-2">{{ {'completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش','assigned':'اتوزعت','started':'شغالة','broadcasting':'بندور','queued':'محجوزة','new':'جديدة'}.get(r.status, r.status) }}</td>
               <td class="py-2 text-text-muted">{{ r.created_at.strftime('%H:%M · %d %b') }}</td>
             </tr>
           {% endfor %}

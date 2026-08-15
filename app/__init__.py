@@ -546,10 +546,44 @@ def _apply_lightweight_migrations(app):
                 conn.execute(text(
                     "ALTER TABLE rides ADD COLUMN office_wa_id VARCHAR(20)"
                 ))
+
+        # Chained-rides / en-route matching. Two ride columns + one driver
+        # opt-in toggle. See ride_lifecycle.complete + matching.try_queue_ride.
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS queued_for_driver_id INTEGER"
+            ))
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS queue_expires_at TIMESTAMP"
+            ))
+            conn.execute(text(
+                "ALTER TABLE drivers ADD COLUMN IF NOT EXISTS wants_chained_rides "
+                "BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+        elif dialect == "sqlite":
+            existing_rides = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "queued_for_driver_id" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN queued_for_driver_id INTEGER"
+                ))
+            if "queue_expires_at" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN queue_expires_at TIMESTAMP"
+                ))
+            existing_drivers = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(drivers)")
+            ).fetchall()}
+            if "wants_chained_rides" not in existing_drivers:
+                conn.execute(text(
+                    "ALTER TABLE drivers ADD COLUMN wants_chained_rides "
+                    "BOOLEAN NOT NULL DEFAULT 1"
+                ))
     # The wallet tables (customer + driver) are new tables — db.create_all()
     # handles them automatically; no ALTER needed. Print here so we can see it
     # ran on every boot.
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon + office_wa_id ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon + office_wa_id + chained_rides ensured")
 
 
 def _init_sentry(app):

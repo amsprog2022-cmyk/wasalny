@@ -231,14 +231,24 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
 def match_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     """Attempt to assign a captain to the ride.
 
-    Mutates the ride status through broadcasting → assigned (on win) or
-    cancelled (if no captain accepts in any expanded zone).
+    Two paths, in order:
+      1. Chained ride: reserve for a captain finishing a nearby trip.
+         When this succeeds, customer/office notifications have already
+         fired inside try_queue_ride and we return early.
+      2. Normal ladder / GPS matching: today's behavior.
+
+    Mutates the ride status through queued → broadcasting → assigned
+    (queued only via path 1; broadcasting only via path 2).
     """
     r = _r()
     ride = db.session.get(Ride, ride_id)
     if ride is None:
         return
-    if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show"):
+    if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show", "queued"):
+        return
+
+    # Path 1: chained-ride reservation. Silent when no captain qualifies.
+    if try_queue_ride(ride):
         return
 
     current_app.logger.info(
@@ -444,7 +454,13 @@ def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) ->
     ride = db.session.get(Ride, ride_id)
     if ride is None:
         return
-    if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show"):
+    if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show", "queued"):
+        return
+
+    # Chained ride reservation runs first — same as the app path. Office
+    # queue-hits get the exact same office reply as a normal assignment,
+    # because try_queue_ride fires notify_office_assigned itself.
+    if try_queue_ride(ride):
         return
 
     ride_lifecycle.mark_broadcasting(ride)
@@ -635,6 +651,290 @@ def _office_rest_candidates(tried: set[int]) -> list[int]:
             pipe.exists(f"driver:{did}:current_ride")
         busy_flags = pipe.execute()
     return [did for did, busy in zip(candidates, busy_flags) if not busy]
+
+
+# ---------- chained rides (en-route matching) ----------
+
+def offer_queued_to(driver_id: int) -> None:
+    """Fire the queued ride's accept screen for `driver_id`, if any.
+
+    Called by ride_lifecycle.complete() the moment the captain finishes
+    his current trip. Uses the standard _emit_offer + _wait_for_accept
+    flow so the captain sees the normal accept screen with countdown.
+
+    Outcomes:
+      - Captain accepts → try_claim + ride_lifecycle.assign(). The
+        customer sees no visible change (they were told the same
+        captain 8 min ago, and now he actually starts the trip).
+      - Captain rejects / times out → release the queue, drop the
+        Redis lock, kick off a fresh matching cycle. The customer
+        will see a second "الكابتن X قبل الرحلة" with a different
+        captain — silent swap.
+    """
+    ride = (
+        Ride.query.filter(
+            Ride.queued_for_driver_id == driver_id,
+            Ride.status == "queued",
+        )
+        .order_by(Ride.id.asc())
+        .first()
+    )
+    if ride is None:
+        return
+
+    app = current_app._get_current_object()
+
+    def _worker():
+        with app.app_context():
+            try:
+                _offer_queued_ride_worker(ride.id, driver_id)
+            except Exception as e:  # noqa: BLE001
+                app.logger.exception(
+                    "queued offer failed for ride %s / driver %s: %s",
+                    ride.id, driver_id, e,
+                )
+
+    eventlet.spawn_n(_worker)
+
+
+def _offer_queued_ride_worker(ride_id: int, driver_id: int) -> None:
+    """The hand-off flow, run in its own greenlet.
+
+    Sequence:
+      1. Flip ride status queued → broadcasting so try_claim on accept
+         behaves like any other broadcast.
+      2. Emit offer + wait 45s.
+      3. Winner (only ever this one captain) → ride_lifecycle.assign
+         with a from_queue_handoff=True hint so it doesn't re-notify
+         the customer (they already got "captain assigned" at queue time).
+      4. Timeout/reject → release the queue slot + fresh matching.
+    """
+    r = _r()
+    ride = db.session.get(Ride, ride_id)
+    if ride is None or ride.status != "queued":
+        return
+
+    ride.status = "broadcasting"
+    db.session.commit()
+
+    # Match the schema _office_round uses so try_claim's pubsub notify
+    # lands in the same room the accept endpoint publishes to.
+    r.sadd(f"broadcast:{ride.id}:offered_to", str(driver_id))
+    r.expire(f"broadcast:{ride.id}:offered_to", 60)
+    _emit_offer(ride, [driver_id])
+
+    window_s = int(current_app.config.get("QUEUE_HANDOFF_WINDOW_SECONDS", 45))
+    winner = _wait_for_accept(ride.id, window_s)
+
+    r.delete(f"broadcast:{ride.id}:offered_to")
+    r.delete(f"driver:{driver_id}:queue_lock")
+
+    if winner == driver_id:
+        db.session.refresh(ride)
+        # from_queue_handoff so assign() skips the customer re-notify
+        # (they were already told this captain's name at queue time).
+        ride_lifecycle.assign(
+            ride, driver_id, pending_fee_ids=None, from_queue_handoff=True,
+        )
+        return
+
+    # Nobody accepted → release the queue, wipe the linkage, and let a
+    # fresh normal-matching cycle find a different captain for this
+    # customer. The customer will see a second "captain assigned" text.
+    db.session.refresh(ride)
+    ride.queued_for_driver_id = None
+    ride.driver_id = None
+    ride.status = "new"  # start_matching guards against non-new states
+    db.session.commit()
+    # Tell the previously-offered captain the offer expired so his
+    # in-trip badge clears (in case he was watching it).
+    try:
+        socketio.emit(
+            "trip_offer_expired",
+            {"ride_id": ride.id},
+            namespace="/driver",
+            room=f"driver:{driver_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("expired emit failed: %s", e)
+    if ride.source == "office":
+        start_office_matching(ride.id)
+    else:
+        start_matching(ride.id)
+
+
+def try_queue_ride(ride: Ride, radius_km: float = 3.0) -> bool:
+    """Try to reserve `ride` for a captain currently on a nearby trip.
+
+    Returns True when we successfully queued. The caller MUST then skip
+    the normal ladder/broadcast — the customer/office has already been
+    notified as if this were a regular assignment.
+
+    Contract:
+      - Skips silently when `ride` has no pickup coord (bare-number
+        office pastes fall through to the ladder as before).
+      - Uses a per-captain Redis lock (`driver:{id}:queue_lock`) to make
+        two concurrent queue attempts race-safe: only one wins.
+      - Prices via the same distance-based `quote_by_coords` used for
+        any app ride — customer pays what they'd pay for a normal trip.
+      - Fires `dispatch_notifications.notify_customer_of_assignment`
+        (app + WhatsApp customers) OR `office_dispatch.notify_office_assigned`
+        (office rides) so the customer sees an ordinary "captain assigned"
+        message with zero hint they've been queued.
+    """
+    if ride.pickup_lat is None or ride.pickup_lng is None:
+        return False
+
+    captain_id = _queue_eligible_captain(
+        ride.pickup_lat, ride.pickup_lng, radius_km=radius_km,
+    )
+    if captain_id is None:
+        return False
+
+    r = _r()
+    # Per-captain queue lock — 15 min TTL matches queue_expires_at.
+    queue_ttl = int(current_app.config.get("QUEUE_TTL_SECONDS", 900))
+    lock_key = f"driver:{captain_id}:queue_lock"
+    got = r.set(lock_key, str(ride.id), nx=True, ex=queue_ttl)
+    if not got:
+        return False
+
+    # Price the ride like any GPS booking. If the dropoff is missing
+    # (deferred flow), leave the existing zero price alone — captain
+    # will confirm on arrival exactly as with a normal WhatsApp trip.
+    from decimal import Decimal
+    try:
+        if ride.dropoff_lat is not None and ride.dropoff_lng is not None:
+            from app.services import pricing as pricing_svc
+            q = pricing_svc.quote_by_coords(
+                ride.customer_id, ride.pickup_lat, ride.pickup_lng,
+                ride.dropoff_lat, ride.dropoff_lng,
+            )
+            ride.price_egp = Decimal(str(q.ride_price_egp))
+            ride.commission_egp = Decimal(str(q.commission_egp))
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("queue quote failed for ride %s: %s", ride.id, e)
+
+    ride.status = "queued"
+    ride.driver_id = captain_id
+    ride.queued_for_driver_id = captain_id
+    ride.queue_expires_at = datetime.utcnow() + timedelta(seconds=queue_ttl)
+    db.session.commit()
+
+    # From here on, the customer sees identical UX to a normal assignment.
+    from app.models.driver import Driver
+    driver = db.session.get(Driver, captain_id)
+    if ride.source == "office":
+        try:
+            from app.services import office_dispatch
+            office_dispatch.notify_office_assigned(ride)
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("queue office notify failed: %s", e)
+    else:
+        if ride.customer is not None and driver is not None:
+            try:
+                from app.services import dispatch_notifications
+                dispatch_notifications.notify_customer_of_assignment(
+                    ride.customer, driver,
+                )
+            except Exception as e:  # noqa: BLE001
+                current_app.logger.warning(
+                    "queue customer notify failed: %s", e
+                )
+
+    # App customers also need the socket event or they'd stay stuck on
+    # "بندور على كابتن..." forever. The customer_app handler flips
+    # isSearching=False on trip_assigned and swaps in the assigned ride.
+    if ride.source == "app":
+        try:
+            socketio.emit(
+                "trip_assigned",
+                {"ride": ride.to_dict()},
+                namespace="/customer",
+                room=f"customer:{ride.customer_id}",
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("queue customer socket emit failed: %s", e)
+
+    # Real-time badge for the captain's trip-in-progress screen.
+    try:
+        socketio.emit(
+            "queued_ride_attached",
+            {
+                "queued_next": {
+                    "ride_id": ride.id,
+                    "pickup_address": ride.pickup_address or "",
+                    "dropoff_address": ride.dropoff_address or "",
+                    "price_egp": float(ride.price_egp or 0),
+                },
+            },
+            namespace="/driver",
+            room=f"driver:{captain_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("queued_ride_attached emit failed: %s", e)
+
+    current_app.logger.info(
+        "ride %s queued for captain %s (radius %.2f km)",
+        ride.id, captain_id, radius_km,
+    )
+    return True
+
+
+def _queue_eligible_captain(
+    pickup_lat: float, pickup_lng: float, radius_km: float = 3.0,
+) -> Optional[int]:
+    """Return the closest captain whose CURRENT trip's destination is
+    within `radius_km` of the new pickup, or None if nobody qualifies.
+
+    A captain qualifies when he:
+      - has an active ride (status assigned / started)
+      - that ride has a known dropoff coord (excludes pre-arrival
+        WhatsApp/office trips — those don't know their destination yet)
+      - has wants_chained_rides = True
+      - is not soft-deleted
+      - doesn't already have a queued ride linked to him
+
+    Ranking is by Haversine distance from the captain's current ride
+    dropoff to the new pickup. Single Postgres query + Python loop —
+    dropoff coords are on the Ride row so no per-driver lookups.
+    """
+    from app.models.driver import Driver
+    from app.services.geo import haversine_km
+
+    # Captains already reserved for a queued ride are out — one queue
+    # slot per captain to keep the state simple.
+    already_queued = {
+        did for (did,) in db.session.query(Ride.queued_for_driver_id)
+        .filter(Ride.status == "queued",
+                Ride.queued_for_driver_id.isnot(None))
+        .all()
+    }
+
+    rows = (
+        db.session.query(Ride.driver_id, Ride.dropoff_lat, Ride.dropoff_lng)
+        .join(Driver, Driver.id == Ride.driver_id)
+        .filter(
+            Ride.status.in_(("assigned", "started")),
+            Ride.driver_id.isnot(None),
+            Ride.dropoff_lat.isnot(None),
+            Ride.dropoff_lng.isnot(None),
+            Driver.wants_chained_rides.is_(True),
+            Driver.deleted_at.is_(None),
+        )
+        .all()
+    )
+
+    best_id: Optional[int] = None
+    best_km = radius_km + 1
+    for did, dlat, dlng in rows:
+        if did in already_queued:
+            continue
+        km = haversine_km(dlat, dlng, pickup_lat, pickup_lng)
+        if km < best_km:
+            best_km = km
+            best_id = did
+    return best_id if best_km <= radius_km else None
 
 
 def _office_nearest_candidates(ride: Ride, tried: set[int]) -> list[int]:
@@ -840,6 +1140,83 @@ SWEEPER_INTERVAL_SECONDS = 30
 SWEEPER_LOCK_KEY = "sweeper:matching:lock"
 
 
+def release_queued_for(driver_id: int, *, reason: str) -> int:
+    """Release every ride queued for `driver_id` and kick off fresh
+    matching for each. Called when the captain's current trip cancels
+    (so he'll no longer trigger a hand-off) or when a queued ride's
+    lifetime expires. Returns the count released."""
+    r = _r()
+    rides = (
+        Ride.query.filter(
+            Ride.queued_for_driver_id == driver_id,
+            Ride.status == "queued",
+        )
+        .all()
+    )
+    if not rides:
+        return 0
+    released = 0
+    for ride in rides:
+        try:
+            ride.status = "new"
+            ride.queued_for_driver_id = None
+            ride.queue_expires_at = None
+            ride.driver_id = None
+            db.session.commit()
+        except Exception as e:  # noqa: BLE001
+            db.session.rollback()
+            current_app.logger.warning(
+                "release_queued_for failed for ride %s: %s", ride.id, e,
+            )
+            continue
+        r.delete(f"driver:{driver_id}:queue_lock")
+        current_app.logger.info(
+            "released queued ride %s (driver=%s reason=%s)",
+            ride.id, driver_id, reason,
+        )
+        # Silent swap for the customer: fresh matching will announce
+        # whichever new captain wins.
+        if ride.source == "office":
+            start_office_matching(ride.id)
+        else:
+            start_matching(ride.id)
+        released += 1
+    return released
+
+
+def sweep_expired_queued() -> int:
+    """Release rides whose queued_for captain never completed his
+    current trip inside the queue TTL. Runs alongside the broadcasting
+    sweeper. Same leader-lock — only one worker sweeps per tick."""
+    now = datetime.utcnow()
+    expired = (
+        Ride.query.filter(
+            Ride.status == "queued",
+            Ride.queue_expires_at.isnot(None),
+            Ride.queue_expires_at < now,
+        )
+        .all()
+    )
+    if not expired:
+        return 0
+    total = 0
+    # release_queued_for is per-driver — group by captain so we don't
+    # re-scan the same queue slot twice.
+    seen: set[int] = set()
+    for ride in expired:
+        did = ride.queued_for_driver_id
+        if did is None or did in seen:
+            continue
+        seen.add(did)
+        try:
+            total += release_queued_for(did, reason="queue_ttl_expired")
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning(
+                "sweep_expired_queued failed for driver %s: %s", did, e,
+            )
+    return total
+
+
 def sweep_stuck_broadcasting() -> int:
     """Cancel rides wedged in `broadcasting` because their matching greenlet
     died (worker crash, deploy mid-round, etc.). Returns the count cancelled.
@@ -905,6 +1282,7 @@ def start_sweeper(app) -> None:
             try:
                 with app.app_context():
                     sweep_stuck_broadcasting()
+                    sweep_expired_queued()
             except Exception as e:  # noqa: BLE001
                 try:
                     app.logger.warning("sweeper loop error: %s", e)

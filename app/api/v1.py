@@ -280,6 +280,13 @@ def driver_profile_update():
             setattr(driver, field, val)
             changed[field] = val
 
+    # Chained-rides toggle — accepts True/False directly (no str-coerce).
+    if "wants_chained_rides" in body:
+        new_val = bool(body["wants_chained_rides"])
+        if driver.wants_chained_rides != new_val:
+            driver.wants_chained_rides = new_val
+            changed["wants_chained_rides"] = new_val
+
     if changed:
         db.session.commit()
     return jsonify({

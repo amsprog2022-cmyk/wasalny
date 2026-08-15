@@ -79,6 +79,16 @@ class Ride(db.Model):
     # Which office pasted this trip in, so the accept confirmation knows where
     # to reply. NULL on every other source.
     office_wa_id = db.Column(db.String(20), index=True)
+    # Chained-rides / en-route matching. When a new ride is created and a
+    # captain finishing his current trip within 3km of the new pickup is
+    # reserved for it, we stamp him here and set status="queued" instead of
+    # broadcasting. The customer sees a normal assignment; the captain sees
+    # a "طلب قادم بعد الرحلة" badge. On his complete(), we transition this
+    # ride to broadcasting and fire the standard offer flow.
+    queued_for_driver_id = db.Column(
+        db.Integer, db.ForeignKey("drivers.id"), nullable=True, index=True,
+    )
+    queue_expires_at = db.Column(db.DateTime, nullable=True)
     # Vehicle-type bucket the customer picked on the home cards.
     # "private" is the current auto-broadcast flow; the other three
     # (suzuki, delivery, vip) stay in `broadcasting` waiting for admin
@@ -96,7 +106,15 @@ class Ride(db.Model):
     rating_comment = db.Column(db.Text)
 
     customer = db.relationship("Customer", backref=db.backref("rides", lazy="dynamic"))
-    driver = db.relationship("Driver", backref=db.backref("rides", lazy="dynamic"))
+    # Two FKs now point at drivers.id (driver_id + queued_for_driver_id).
+    # foreign_keys= disambiguates which one this relationship follows.
+    driver = db.relationship(
+        "Driver", backref=db.backref("rides", lazy="dynamic"),
+        foreign_keys=[driver_id],
+    )
+    queued_for_driver = db.relationship(
+        "Driver", foreign_keys=[queued_for_driver_id],
+    )
     from_zone = db.relationship("Zone", foreign_keys=[from_zone_id])
     to_zone = db.relationship("Zone", foreign_keys=[to_zone_id])
 

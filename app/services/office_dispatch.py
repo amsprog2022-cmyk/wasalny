@@ -120,6 +120,67 @@ def extract_phone(text: str) -> tuple[Optional[str], str]:
     return None, _clean_leftover(ascii_text)
 
 
+# Any of the dashes offices type between pickup and dropoff. Bracketed
+# so it's easy to test each variant.
+_DEST_SEP = re.compile(r"\s*[-–—_]\s*")
+# Trailing integer (Egyptian pound amount). Matches "70", "70 ج.م", "70 جنيه".
+# Anchored to end-of-text so a house number mid-address never gets grabbed.
+_TRAILING_PRICE = re.compile(
+    r"\s*(\d{1,4})\s*(?:ج\s*\.?\s*م|جنيه|جنيها|EGP)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_office_message(text: str) -> dict:
+    """Full office paste parser.
+
+    Returns a dict:
+        {
+          "wa_id": str | None,      # customer phone
+          "pickup": str,            # may be ""
+          "dropoff": str,           # may be ""
+          "price_egp": float | None # None → auto-price from km
+        }
+
+    Format the office actually types:
+        "01012818977 سندنهور - بنها 70"
+        "01012818977 سندنهور"                  (pickup only, price auto)
+        "01012818977 - بنها 70"                (dropoff + price, no pickup)
+        "01012818977"                          (bare number, blast to captains)
+
+    The trailing integer, if present, ALWAYS wins over the km-based price.
+    Any dash character between fields splits pickup from dropoff.
+    """
+    wa_id, leftover = extract_phone(text)
+    if wa_id is None:
+        return {"wa_id": None, "pickup": "", "dropoff": "", "price_egp": None}
+
+    body = (leftover or "").strip()
+    price: Optional[float] = None
+
+    # Trailing price first — strip before splitting on the dash so the
+    # dash-split doesn't mistake "70" for a dropoff word.
+    m = _TRAILING_PRICE.search(body)
+    if m:
+        try:
+            price = float(m.group(1))
+        except ValueError:
+            price = None
+        # Only trim the price token if we successfully parsed it, so
+        # "شقة 5" (which would match) still keeps its digits when we
+        # can't coerce them cleanly.
+        if price is not None:
+            body = body[: m.start()].strip(" -–—_/.,،")
+
+    # Split pickup / dropoff on any dash. Missing dash → whole text is pickup.
+    parts = _DEST_SEP.split(body, maxsplit=1)
+    pickup = (parts[0] or "").strip()
+    dropoff = (parts[1] if len(parts) > 1 else "").strip()
+
+    return {"wa_id": wa_id, "pickup": pickup, "dropoff": dropoff,
+            "price_egp": price}
+
+
 def _clean_leftover(text: str) -> str:
     """Whitespace-collapse and drop the punctuation the number left behind.
 
@@ -241,8 +302,15 @@ def notify_office_no_driver(ride) -> None:
 # ---------- pipeline ----------
 
 def handle_office_message(office_wa_id: str, body: str) -> None:
-    """Parse one pasted office message and dispatch it. One trip per message."""
-    phone, leftover = extract_phone(body)
+    """Parse one pasted office message and dispatch it. One trip per message.
+
+    Accepted formats (see parse_office_message):
+      "01012818977 سندنهور - بنها 70"    (pickup, dropoff, explicit price)
+      "01012818977 سندنهور"                (pickup only, auto-price)
+      "01012818977"                        (bare number, blast to captains)
+    """
+    parsed = parse_office_message(body)
+    phone = parsed["wa_id"]
     if phone is None:
         _reply(
             office_wa_id,
@@ -252,15 +320,18 @@ def handle_office_message(office_wa_id: str, body: str) -> None:
         return
 
     customer = _get_or_create_customer(phone)
-    place = resolve_pickup(leftover)
+    pickup_place = resolve_pickup(parsed["pickup"])
+    dropoff_place = resolve_pickup(parsed["dropoff"]) if parsed["dropoff"] else None
 
     from app.services import matching, ride_lifecycle
 
     try:
         ride, pending_fee_ids = ride_lifecycle.create_ride(
             customer_id=customer.id,
-            pickup_lat=(place["lat"] if place else None),
-            pickup_lng=(place["lng"] if place else None),
+            pickup_lat=(pickup_place["lat"] if pickup_place else None),
+            pickup_lng=(pickup_place["lng"] if pickup_place else None),
+            dropoff_lat=(dropoff_place["lat"] if dropoff_place else None),
+            dropoff_lng=(dropoff_place["lng"] if dropoff_place else None),
             source="office",
             service_kind="private",
         )
@@ -270,15 +341,30 @@ def handle_office_message(office_wa_id: str, body: str) -> None:
         return
 
     ride.office_wa_id = office_wa_id
-    # Without coordinates create_ride leaves the pickup blank, so keep whatever
-    # the office typed — it's all the captain has to go on before he calls.
-    if not ride.pickup_address and leftover:
-        ride.pickup_address = leftover
+    # Keep whatever the office typed as the visible address when the
+    # geocoder failed — that's all the captain has to go on before he calls.
+    if not ride.pickup_address and parsed["pickup"]:
+        ride.pickup_address = parsed["pickup"]
+    if not ride.dropoff_address and parsed["dropoff"]:
+        ride.dropoff_address = parsed["dropoff"]
+
+    # Explicit trailing price wins over the km-based auto-quote. Commission
+    # is re-derived from the current commission_rate setting so an admin
+    # tweak on /pricing is reflected here without a redeploy.
+    if parsed["price_egp"] is not None:
+        from decimal import Decimal
+        from app.services import settings as _settings_svc
+        rate = _settings_svc.get_pricing()["commission_rate"]
+        override = Decimal(f"{parsed['price_egp']:.2f}")
+        ride.price_egp = override
+        ride.commission_egp = (override * rate).quantize(Decimal("0.01"))
+
     db.session.commit()
 
     current_app.logger.info(
-        "office ride %s from %s for %s (gps=%s)",
-        ride.id, office_wa_id, phone, bool(place),
+        "office ride %s from %s for %s (pickup_gps=%s dropoff_gps=%s price=%s)",
+        ride.id, office_wa_id, phone,
+        bool(pickup_place), bool(dropoff_place), parsed["price_egp"],
     )
     matching.start_office_matching(ride.id, pending_fee_ids=pending_fee_ids)
 

@@ -97,7 +97,7 @@
           </tr>
         </thead>
         <tbody>
-          {% set status_ar = {'new':'جديدة','broadcasting':'بندور','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش'} %}
+          {% set status_ar = {'new':'جديدة','broadcasting':'بندور','queued':'محجوزة','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'ماحضرش'} %}
           {% for r in rides %}
             <tr class="border-t border-white/5">
               <td class="py-2"><a href="{{ url_for('rides.show', ride_id=r.id) }}" class="text-primary hover:underline">#{{ r.id }}</a></td>

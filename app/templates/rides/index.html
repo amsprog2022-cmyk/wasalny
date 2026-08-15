@@ -12,12 +12,23 @@
   {% set tab_labels = {'active':'شغالة دلوقتي','new':'جديدة','completed':'خلصت','cancelled':'اتلغت','all':'الكل'} %}
   <div class="flex gap-2 mb-4">
     {% for slug, label, _ in tabs %}
-      <a href="{{ url_for('rides.index', tab=slug) }}"
+      <a href="{{ url_for('rides.index', tab=slug, q=q_text) }}"
          class="px-4 py-2 rounded-full text-sm {% if active_tab == slug %}bg-primary text-white{% else %}bg-surface text-text-muted hover:text-white{% endif %}">
         {{ tab_labels.get(slug, label) }} <span class="opacity-70">({{ counts[slug] }})</span>
       </a>
     {% endfor %}
   </div>
+
+  <form method="get" action="{{ url_for('rides.index') }}" class="flex gap-2 mb-4">
+    <input type="hidden" name="tab" value="{{ active_tab }}" />
+    <input type="text" name="q" value="{{ q_text or '' }}"
+           placeholder="ابحث باسم الكابتن أو رقمه"
+           class="input flex-1" style="max-width: 360px;" />
+    <button class="btn-ghost">بحث</button>
+    {% if q_text %}
+      <a href="{{ url_for('rides.index', tab=active_tab) }}" class="btn-ghost">مسح</a>
+    {% endif %}
+  </form>
 
   <div class="card p-0 overflow-hidden">
     <table class="w-full text-sm">
@@ -34,7 +45,7 @@
         </tr>
       </thead>
       <tbody>
-        {% set status_ar = {'new':'جديدة','broadcasting':'بندور','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'العميل ماحضرش'} %}
+        {% set status_ar = {'new':'جديدة','broadcasting':'بندور','queued':'محجوزة للكابتن','assigned':'اتوزعت','started':'شغالة','completed':'خلصت','cancelled':'اتلغت','cancelled_no_show':'العميل ماحضرش'} %}
         {% for r in rides %}
           <tr class="border-t border-white/5 hover:bg-white/[0.02]">
             <td class="px-4 py-3 text-text-muted">#{{ r.id }}</td>
@@ -53,6 +64,7 @@
             <td class="px-4 py-3">
               {% set color = {
                 'new': 'text-text-muted', 'broadcasting': 'text-warning',
+                'queued': 'text-warning',
                 'assigned': 'text-primary', 'started': 'text-success',
                 'completed': 'text-success', 'cancelled': 'text-red-300',
                 'cancelled_no_show': 'text-red-300',

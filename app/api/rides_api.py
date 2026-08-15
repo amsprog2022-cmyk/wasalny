@@ -143,9 +143,30 @@ def driver_active_ride():
         .first()
     )
     if active is not None:
+        # Chained-ride badge: a ride queued for this captain is what the
+        # app renders as "طلب قادم بعد الرحلة" on the trip-in-progress
+        # screen. Small subset of fields — the captain doesn't need the
+        # customer's contact until he actually accepts the queued offer.
+        queued_next = None
+        queued = (
+            Ride.query.filter(
+                Ride.queued_for_driver_id == did,
+                Ride.status == "queued",
+            )
+            .order_by(Ride.id.asc())
+            .first()
+        )
+        if queued is not None:
+            queued_next = {
+                "ride_id": queued.id,
+                "pickup_address": queued.pickup_address or "",
+                "dropoff_address": queued.dropoff_address or "",
+                "price_egp": float(queued.price_egp or 0),
+            }
         return jsonify({
             "ride": active.to_dict(include_customer_contact=True),
             "is_offer": False,
+            "queued_next": queued_next,
         })
 
     # (2) Broadcasting offer where this captain is in the offered_to set.

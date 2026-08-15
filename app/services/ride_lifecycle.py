@@ -231,14 +231,30 @@ def mark_broadcasting(ride: Ride) -> None:
         _emit_inbox(ride, "broadcasting")
 
 
-def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None) -> None:
-    """Broadcast winner: driver_id has already reserved the ride lock in Redis."""
+def assign(
+    ride: Ride, driver_id: int,
+    pending_fee_ids: list[int] | None = None,
+    from_queue_handoff: bool = False,
+) -> None:
+    """Broadcast winner: driver_id has already reserved the ride lock in Redis.
+
+    `from_queue_handoff=True` marks the assign as the completion of a
+    chained-ride hand-off — the customer was told this captain's name
+    at queue time, so we skip the customer WhatsApp/push re-notification
+    to avoid a duplicate "captain assigned" message.
+    """
     if ride.status not in ("broadcasting", "new"):
         raise ValueError(f"Cannot assign a ride in status '{ride.status}'.")
     ride.driver_id = driver_id
     ride.status = "assigned"
     ride.assigned_at = datetime.utcnow()
-    _record(ride.id, "assigned", "system", {"driver_id": driver_id})
+    # Chained hand-off completes — clear the queue linkage so the same
+    # captain isn't re-offered this ride if he finishes another trip later.
+    if from_queue_handoff:
+        ride.queued_for_driver_id = None
+        ride.queue_expires_at = None
+    _record(ride.id, "assigned", "system",
+            {"driver_id": driver_id, "from_queue_handoff": from_queue_handoff})
     # Note: pending fees are already applied at create_ride time. This param is
     # kept for backward compat but is now a no-op — safe to remove after Phase 3.
 
@@ -274,13 +290,17 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     zone_to = ride.to_zone.name_ar if ride.to_zone else ""
     driver_name = driver.name if driver else "الكابتن"
     car_plate = (driver.car_plate if driver else "") or ""
-    push.send_to_customer(
-        ride.customer_id,
-        title="كابتن جاي 🚗",
-        body=f"{driver_name} · {car_plate}" if car_plate else driver_name,
-        data={"kind": "trip_assigned", "ride_id": ride.id},
-        collapse_key=f"ride:{ride.id}",
-    )
+    # Skip the customer push + WhatsApp on chained hand-off — this same
+    # captain was announced when the ride was queued, so a second
+    # notification would look like a duplicate.
+    if not from_queue_handoff:
+        push.send_to_customer(
+            ride.customer_id,
+            title="كابتن جاي 🚗",
+            body=f"{driver_name} · {car_plate}" if car_plate else driver_name,
+            data={"kind": "trip_assigned", "ride_id": ride.id},
+            collapse_key=f"ride:{ride.id}",
+        )
     push.send_to_driver(
         driver_id,
         title="✅ رحلة اتوزعت عليك",
@@ -292,7 +312,10 @@ def assign(ride: Ride, driver_id: int, pending_fee_ids: list[int] | None = None)
     # WhatsApp customers don't have our app — send them a real WhatsApp text
     # with the captain's car and phone, then the "download the app" nudge.
     # Same helper the admin assign flows use so the copy never diverges.
-    if ride.source == "whatsapp" and ride.customer is not None and driver is not None:
+    if (not from_queue_handoff
+            and ride.source == "whatsapp"
+            and ride.customer is not None
+            and driver is not None):
         try:
             from app.services import dispatch_notifications
             dispatch_notifications.notify_customer_of_assignment(ride.customer, driver)
@@ -402,6 +425,12 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
         collapse_key=f"ride:{ride.id}",
     )
 
+    # Chained-ride hand-off: if a ride was queued to this captain while
+    # he was mid-trip, offer it now via the normal accept flow. Runs in
+    # its own greenlet so complete() returns immediately.
+    from app.services import matching
+    matching.offer_queued_to(actor_driver_id)
+
 
 def cancel(ride: Ride, *, actor: str, reason: str) -> None:
     if ride.status in ("completed", "cancelled", "cancelled_no_show"):
@@ -418,6 +447,19 @@ def cancel(ride: Ride, *, actor: str, reason: str) -> None:
         av.set_available(ride.driver_id, True)
 
     db.session.commit()
+
+    # If this captain had a chained-ride reservation waiting for him,
+    # release it — with no active trip he'd never trigger the hand-off,
+    # and the queued customer needs to go back into normal matching.
+    if ride.driver_id:
+        try:
+            from app.services import matching as _matching
+            _matching.release_queued_for(ride.driver_id, reason="captain_cancelled")
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning(
+                "release_queued_for failed after cancel: %s", e,
+            )
+
     _emit_customer(ride, "trip_cancelled", {"reason": reason})
     if ride.driver_id:
         _emit_driver(ride.driver_id, "trip_cancelled", {"ride": ride.to_dict(), "reason": reason})

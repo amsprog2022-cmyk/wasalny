@@ -82,6 +82,12 @@ class Driver(db.Model):
     # Store policies (in-app account deletion).
     deleted_at = db.Column(db.DateTime)
 
+    # Chained-rides opt-in. When True (default), the matcher may reserve a
+    # new ride for this captain if his current trip's destination is within
+    # 3km of the new pickup. Captains can flip this off from the profile
+    # screen if they want to go home after the current trip.
+    wants_chained_rides = db.Column(db.Boolean, default=True, nullable=False)
+
     # Live GPS. Redis (driver_positions GEO set) is the hot path; these columns
     # are the durable snapshot updated on trip lifecycle events + when the
     # captain goes online after a long gap. Nullable so captains never issued
@@ -134,4 +140,5 @@ class Driver(db.Model):
         if include_status:
             data["discipline_status"] = self.discipline_status
             data["is_active"] = self.is_active
+            data["wants_chained_rides"] = bool(self.wants_chained_rides)
         return data
