@@ -425,14 +425,20 @@ def _zone_match(ride: Ride, tried: set[int], r) -> Optional[int]:
 def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) -> None:
     """Matching for a trip the office took by phone and pasted into WhatsApp.
 
-    Nearest captain first (one round, GPS only). Then a re-firing blast that
-    re-queries every eligible captain each round for up to
-    OFFICE_BLAST_TOTAL_SECONDS. Re-querying is what catches captains who came
-    online mid-search or just finished a trip — a single-shot blast would
-    freeze them out of a job they'd have taken.
+    Distance ladder: nearest 3 captains first, then next 7, then next 15,
+    then everyone else with an FCM token. Each ring gets its own accept
+    window and skips captains already offered in earlier rings. This
+    replaces the old blast-to-everyone approach which pinged 300 captains
+    per lost trip; now the typical trip closes in ring 1 with 3 pushes
+    and only a genuinely un-fillable trip ever reaches the "rest" ring.
+
+    Ranking source per captain:
+      - Redis GEO (fresh, updated by every driver_position socket ping)
+      - Falls back to Driver.latitude/longitude snapshot for offline captains
+      - Captains with no position on record only appear in the final ring
 
     Fastest-wins guarantee is unchanged: every accept still goes through
-    `try_claim`, the loop just widens the audience over time.
+    `try_claim`, the ladder just changes who hears each round.
     """
     r = _r()
     ride = db.session.get(Ride, ride_id)
@@ -445,41 +451,54 @@ def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) ->
     tried: set[int] = set()
     winner: Optional[int] = None
 
-    if ride.pickup_lat is not None and ride.pickup_lng is not None:
-        winner = _office_round(
-            ride, _office_nearest_candidates(ride, tried), tried, r,
-            int(current_app.config.get("OFFICE_NEAREST_WINDOW_SECONDS", 20)),
-        )
+    has_pickup = ride.pickup_lat is not None and ride.pickup_lng is not None
 
-    # Blast retry loop — every OFFICE_BLAST_WINDOW_SECONDS we re-query the
-    # eligible captain set and fire another round, until a captain accepts or
-    # OFFICE_BLAST_TOTAL_SECONDS has elapsed. Re-querying each round is what
-    # makes newly-online captains and captains who just finished a trip
-    # actually get pinged instead of being frozen out by the first pass.
-    if winner is None:
-        blast_window = int(
-            current_app.config.get("OFFICE_BLAST_WINDOW_SECONDS", 60)
+    if has_pickup:
+        # Ladder rings — sizes and windows kept short of a full deploy via
+        # env knobs, defaults chosen for a ~3.5 min total. The last "rest"
+        # ring is unbounded and includes captains with no known position.
+        ring_sizes = _parse_int_list(
+            current_app.config.get("OFFICE_LADDER_RING_SIZES", "3,7,15"),
         )
-        total_cap = int(
-            current_app.config.get("OFFICE_BLAST_TOTAL_SECONDS", 300)
+        ring_windows = _parse_int_list(
+            current_app.config.get("OFFICE_LADDER_WINDOWS_SECONDS", "30,45,60,60"),
         )
-        started_at = time.time()
-        while winner is None:
-            remaining = total_cap - (time.time() - started_at)
-            if remaining < 5:
+        # Pad windows with the last value so a shorter list still works.
+        while len(ring_windows) < len(ring_sizes) + 1:
+            ring_windows.append(ring_windows[-1] if ring_windows else 60)
+
+        # Re-rank captains at each ring — since _office_ranked_candidates
+        # already filters out anyone in `tried`, the first N of a fresh
+        # ranking is exactly "the next N closest we haven't offered yet",
+        # so newly-online / just-finished captains slot into their real
+        # distance rank instead of being frozen at an early snapshot.
+        for ring_idx, size in enumerate(ring_sizes):
+            if winner is not None:
                 break
-            # Fresh candidate set each round. `tried` is reset so a captain
-            # who missed the first FCM ping gets pinged again — collapse_key
-            # on the push replaces the stale one, so no notification pileup.
-            candidates = _office_blast_candidates(set())
-            if not candidates:
-                # Nobody eligible right now. Wait a bit and re-query — a
-                # captain finishing a trip in the next 15s should still get
-                # this ride rather than being missed forever.
-                eventlet.sleep(min(15.0, remaining))
+            ranked = _office_ranked_candidates(
+                ride.pickup_lat, ride.pickup_lng, tried,
+                include_positionless=False,
+            )
+            batch = ranked[:size]
+            if not batch:
                 continue
-            window = min(blast_window, int(remaining))
-            winner = _office_round(ride, candidates, set(), r, window)
+            window_s = int(ring_windows[ring_idx])
+            winner = _office_round(ride, batch, tried, r, window_s)
+
+        # Final ring: everyone else eligible, including captains we have
+        # no position for (they were skipped in the ranked rings above).
+        if winner is None:
+            rest = _office_rest_candidates(tried)
+            if rest:
+                window_s = int(ring_windows[len(ring_sizes)])
+                winner = _office_round(ride, rest, tried, r, window_s)
+    else:
+        # No pickup coords → can't rank by distance, so fall back to a
+        # single blast covering everyone. Same window as the final ring.
+        window_s = int(current_app.config.get("OFFICE_BLAST_WINDOW_SECONDS", 60))
+        winner = _office_round(
+            ride, _office_rest_candidates(tried), tried, r, window_s,
+        )
 
     r.delete(f"broadcast:{ride.id}:offered_to")
 
@@ -498,8 +517,103 @@ def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) ->
     office_dispatch.notify_office_no_driver(ride)
 
 
+def _parse_int_list(raw) -> list[int]:
+    """'3,7,15' → [3, 7, 15]. Silently drops junk."""
+    out: list[int] = []
+    if raw is None:
+        return out
+    for piece in str(raw).split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        try:
+            out.append(int(piece))
+        except ValueError:
+            continue
+    return out
+
+
+def _office_ranked_candidates(
+    pickup_lat: float, pickup_lng: float, tried: set[int],
+    include_positionless: bool = False,
+) -> list[int]:
+    """Every eligible captain sorted by distance to pickup, ascending.
+
+    Ranking source per captain: Redis GEO first (freshest — updated on
+    every driver_position socket ping), then the Driver.latitude/longitude
+    snapshot (last-known, used for offline captains). Captains with no
+    position on record anywhere are only included when
+    include_positionless=True, and then appended at the end unranked.
+
+    Excludes captains in `tried`, blocked, deleted, without an FCM token,
+    or currently on another trip.
+    """
+    from app.models.driver import Driver
+    from app.services.geo import haversine_km
+
+    blocked = _blocked_driver_ids()
+    r = _r()
+
+    # Pull the whole eligible pool in one query — includes the position
+    # snapshot so the fallback for offline captains doesn't cost N queries.
+    rows = (
+        db.session.query(Driver.id, Driver.latitude, Driver.longitude)
+        .filter(Driver.fcm_token.isnot(None), Driver.deleted_at.is_(None))
+        .all()
+    )
+
+    ranked: list[tuple[float, int]] = []
+    positionless: list[int] = []
+    for did, snap_lat, snap_lng in rows:
+        if did in tried or did in blocked:
+            continue
+        if r.exists(f"driver:{did}:current_ride"):
+            continue
+
+        # Prefer the live GEO fix; fall back to the snapshot for offline
+        # captains. Skip if neither exists — those go to the rest ring only.
+        pos = av.get_position(did)
+        if pos is None and snap_lat is not None and snap_lng is not None:
+            pos = (float(snap_lat), float(snap_lng))
+        if pos is None:
+            positionless.append(did)
+            continue
+
+        dist = haversine_km(pickup_lat, pickup_lng, pos[0], pos[1])
+        ranked.append((dist, did))
+
+    ranked.sort(key=lambda t: t[0])
+    result = [did for _, did in ranked]
+    if include_positionless:
+        result.extend(positionless)
+    return result
+
+
+def _office_rest_candidates(tried: set[int]) -> list[int]:
+    """Every eligible captain regardless of distance/position — for the
+    final ladder ring. Includes captains with no position on record."""
+    from app.models.driver import Driver
+
+    blocked = _blocked_driver_ids()
+    r = _r()
+    rows = (
+        db.session.query(Driver.id)
+        .filter(Driver.fcm_token.isnot(None), Driver.deleted_at.is_(None))
+        .all()
+    )
+    return [
+        did for (did,) in rows
+        if did not in tried and did not in blocked
+        and not r.exists(f"driver:{did}:current_ride")
+    ]
+
+
 def _office_nearest_candidates(ride: Ride, tried: set[int]) -> list[int]:
-    """The single closest available captain to the pickup."""
+    """The single closest available captain to the pickup.
+
+    Kept for backwards compatibility (unused after the ladder rewrite),
+    but callable if something else in the codebase wants it.
+    """
     radius = float(current_app.config.get("OFFICE_NEAREST_RADIUS_KM", 10))
     blocked = _blocked_driver_ids()
     for driver_id, _distance, _coords in av.nearest_drivers(
