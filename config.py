@@ -22,6 +22,18 @@ class Config:
         os.getenv("DATABASE_URL", "sqlite:///wassalny.db")
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Pool sized for bursty office dispatch: 20 concurrent matching
+    # greenlets × a few queries each × the /webhook path × a few admin
+    # tabs open eats through the default 5+10 before you notice. 20+30
+    # per worker × 2 workers = 100, which is Railway Postgres's default
+    # max_connections. pool_pre_ping drops dead connections instead of
+    # returning a stale one to the greenlet.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_size": int(os.getenv("SQLALCHEMY_POOL_SIZE", "20")),
+        "max_overflow": int(os.getenv("SQLALCHEMY_MAX_OVERFLOW", "30")),
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+    }
 
     # Redis (real-time hot path). Empty → in-memory fakeredis for local dev.
     REDIS_URL = os.getenv("REDIS_URL", "")

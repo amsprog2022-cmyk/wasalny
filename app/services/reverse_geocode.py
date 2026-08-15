@@ -22,12 +22,21 @@ import time
 import unicodedata
 from typing import Optional
 
+import eventlet
 import requests
 from flask import current_app
 
 from app import db
 from app.extensions import get_redis
 from app.models.zone import Zone
+
+
+# Nominatim public policy is 1 req/sec. Under a burst (e.g. 20 office
+# pastes arriving in 5s each firing 2-4 lookups), a naive fan-out would
+# get us rate-limited or IP-banned. Cap concurrent in-flight calls with
+# an eventlet semaphore — greenlets wait their turn instead of hammering.
+# 3 is generous while still keeping us well under the fair-use ceiling.
+_NOMINATIM_SEMAPHORE = eventlet.semaphore.Semaphore(3)
 from app.services.geo import haversine_km
 
 
@@ -67,25 +76,26 @@ def _normalize(text: str) -> str:
 
 def _nominatim_reverse(lat: float, lng: float) -> dict | None:
     """Call Nominatim. Returns the raw JSON or None on any failure."""
-    try:
-        resp = requests.get(
-            NOMINATIM_URL,
-            params={
-                "lat": lat,
-                "lon": lng,
-                "format": "jsonv2",
-                "accept-language": "ar",
-                "zoom": 16,   # neighbourhood-level detail
-                "addressdetails": 1,
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=6,
-        )
-        if resp.status_code != 200:
+    with _NOMINATIM_SEMAPHORE:
+        try:
+            resp = requests.get(
+                NOMINATIM_URL,
+                params={
+                    "lat": lat,
+                    "lon": lng,
+                    "format": "jsonv2",
+                    "accept-language": "ar",
+                    "zoom": 16,   # neighbourhood-level detail
+                    "addressdetails": 1,
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=6,
+            )
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except (requests.RequestException, ValueError):
             return None
-        return resp.json()
-    except (requests.RequestException, ValueError):
-        return None
 
 
 def _extract_candidate_names(nominatim_response: dict) -> list[str]:
@@ -256,53 +266,54 @@ _CONFIDENT_BBOX_WIDTH_DEG = 0.005
 
 def _nominatim_query(q: str, viewbox: str, bounded: int, limit: int) -> list[dict]:
     results: list[dict] = []
-    try:
-        resp = requests.get(
-            NOMINATIM_SEARCH_URL,
-            params={
-                "q": q,
-                "format": "jsonv2",
-                "accept-language": "ar",
-                "countrycodes": "eg",
-                "viewbox": viewbox,
-                "bounded": bounded,
-                "limit": limit,
-                "addressdetails": 0,
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=6,
-        )
-        if resp.status_code == 200:
-            for item in resp.json():
-                try:
-                    lat = float(item["lat"])
-                    lng = float(item["lon"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                display = (item.get("display_name") or "").strip()
-                label = "، ".join(
-                    [p.strip() for p in display.split(",")[:3] if p.strip()]
-                )
-                if not label:
-                    continue
-                # bbox = [south_lat, north_lat, west_lng, east_lng] as strings
-                bbox = item.get("boundingbox") or []
-                bbox_width: float | None = None
-                try:
-                    if len(bbox) == 4:
-                        bbox_width = abs(float(bbox[3]) - float(bbox[2]))
-                except (TypeError, ValueError):
-                    bbox_width = None
-                results.append({
-                    "label": label,
-                    "lat": lat,
-                    "lng": lng,
-                    "class": item.get("class"),
-                    "type": item.get("type"),
-                    "bbox_width": bbox_width,
-                })
-    except (requests.RequestException, ValueError):
-        return []
+    with _NOMINATIM_SEMAPHORE:
+        try:
+            resp = requests.get(
+                NOMINATIM_SEARCH_URL,
+                params={
+                    "q": q,
+                    "format": "jsonv2",
+                    "accept-language": "ar",
+                    "countrycodes": "eg",
+                    "viewbox": viewbox,
+                    "bounded": bounded,
+                    "limit": limit,
+                    "addressdetails": 0,
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=6,
+            )
+            if resp.status_code == 200:
+                for item in resp.json():
+                    try:
+                        lat = float(item["lat"])
+                        lng = float(item["lon"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    display = (item.get("display_name") or "").strip()
+                    label = "، ".join(
+                        [p.strip() for p in display.split(",")[:3] if p.strip()]
+                    )
+                    if not label:
+                        continue
+                    # bbox = [south_lat, north_lat, west_lng, east_lng]
+                    bbox = item.get("boundingbox") or []
+                    bbox_width: float | None = None
+                    try:
+                        if len(bbox) == 4:
+                            bbox_width = abs(float(bbox[3]) - float(bbox[2]))
+                    except (TypeError, ValueError):
+                        bbox_width = None
+                    results.append({
+                        "label": label,
+                        "lat": lat,
+                        "lng": lng,
+                        "class": item.get("class"),
+                        "type": item.get("type"),
+                        "bbox_width": bbox_width,
+                    })
+        except (requests.RequestException, ValueError):
+            return []
     return results
 
 

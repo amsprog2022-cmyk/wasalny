@@ -546,33 +546,54 @@ def _office_ranked_candidates(
     include_positionless=True, and then appended at the end unranked.
 
     Excludes captains in `tried`, blocked, deleted, without an FCM token,
-    or currently on another trip.
+    or currently on another trip. The busy check + geopos lookups are
+    pipelined so ranking 300 captains costs one Redis round-trip instead
+    of 600 sequential calls — critical under bursty office load.
     """
     from app.models.driver import Driver
+    from app.services.availability import GEO_KEY
     from app.services.geo import haversine_km
 
     blocked = _blocked_driver_ids()
     r = _r()
 
-    # Pull the whole eligible pool in one query — includes the position
-    # snapshot so the fallback for offline captains doesn't cost N queries.
+    # Pull the whole eligible pool in one Postgres query, including the
+    # position snapshot so the fallback for offline captains is free.
     rows = (
         db.session.query(Driver.id, Driver.latitude, Driver.longitude)
         .filter(Driver.fcm_token.isnot(None), Driver.deleted_at.is_(None))
         .all()
     )
+    eligible = [
+        (did, snap_lat, snap_lng)
+        for (did, snap_lat, snap_lng) in rows
+        if did not in tried and did not in blocked
+    ]
+    if not eligible:
+        return []
+
+    # Batch the busy-check + GEO fetch in one Redis pipeline. On Railway's
+    # external Redis (~1 ms/call), the difference between 300 sequential
+    # calls and 1 pipelined round-trip is ~1s of pure network wait per
+    # matching cycle, per unmatched trip.
+    with r.pipeline(transaction=False) as pipe:
+        for did, _, _ in eligible:
+            pipe.exists(f"driver:{did}:current_ride")
+            pipe.geopos(GEO_KEY, str(did))
+        pipe_results = pipe.execute()
 
     ranked: list[tuple[float, int]] = []
     positionless: list[int] = []
-    for did, snap_lat, snap_lng in rows:
-        if did in tried or did in blocked:
-            continue
-        if r.exists(f"driver:{did}:current_ride"):
+    for i, (did, snap_lat, snap_lng) in enumerate(eligible):
+        busy = bool(pipe_results[i * 2])
+        if busy:
             continue
 
-        # Prefer the live GEO fix; fall back to the snapshot for offline
-        # captains. Skip if neither exists — those go to the rest ring only.
-        pos = av.get_position(did)
+        geo = pipe_results[i * 2 + 1]
+        pos: tuple[float, float] | None = None
+        if geo and geo[0] is not None:
+            lng, lat = geo[0]
+            pos = (float(lat), float(lng))
         if pos is None and snap_lat is not None and snap_lng is not None:
             pos = (float(snap_lat), float(snap_lng))
         if pos is None:
@@ -591,7 +612,9 @@ def _office_ranked_candidates(
 
 def _office_rest_candidates(tried: set[int]) -> list[int]:
     """Every eligible captain regardless of distance/position — for the
-    final ladder ring. Includes captains with no position on record."""
+    final ladder ring. Includes captains with no position on record.
+    Busy check is pipelined for the same one-round-trip reason as
+    _office_ranked_candidates."""
     from app.models.driver import Driver
 
     blocked = _blocked_driver_ids()
@@ -601,11 +624,17 @@ def _office_rest_candidates(tried: set[int]) -> list[int]:
         .filter(Driver.fcm_token.isnot(None), Driver.deleted_at.is_(None))
         .all()
     )
-    return [
+    candidates = [
         did for (did,) in rows
         if did not in tried and did not in blocked
-        and not r.exists(f"driver:{did}:current_ride")
     ]
+    if not candidates:
+        return []
+    with r.pipeline(transaction=False) as pipe:
+        for did in candidates:
+            pipe.exists(f"driver:{did}:current_ride")
+        busy_flags = pipe.execute()
+    return [did for did, busy in zip(candidates, busy_flags) if not busy]
 
 
 def _office_nearest_candidates(ride: Ride, tried: set[int]) -> list[int]:
