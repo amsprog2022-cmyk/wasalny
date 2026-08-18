@@ -16,6 +16,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -36,7 +37,7 @@ from app.extensions import get_redis
 from app.models.customer import Customer
 from app.models.driver import Driver
 from app.models.intercity_request import IntercityRequest
-from app.models.ride import Ride
+from app.models.ride import Ride, RideStatusEvent
 from app.models.zone import Zone
 from app.services import pricing as pricing_svc
 from app.services import ride_lifecycle
@@ -1885,6 +1886,155 @@ def rides_arrived_set_destination(ride_id: int):
         "ok": True,
         "distance_km": q.distance_km,
         "ride": ride.to_dict(include_customer_contact=True),
+    })
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/quote-change")
+@jwt_required()
+def rides_quote_change(ride_id: int):
+    """Preview the new price if pickup + dropoff were changed on an
+    active trip. Read-only — no writes, no notifications. Powers the
+    captain's "show new price → confirm" flow before commit.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status not in ("assigned", "started"):
+        return jsonify({"error": "wrong_status", "status": ride.status}), 409
+
+    data = request.json or {}
+    try:
+        plat = float(data["pickup_lat"])
+        plng = float(data["pickup_lng"])
+        dlat = float(data["dropoff_lat"])
+        dlng = float(data["dropoff_lng"])
+    except (TypeError, KeyError, ValueError):
+        return jsonify({"error": "pickup + dropoff coords required"}), 400
+
+    from app.services import pricing as pricing_svc
+    q = pricing_svc.quote_by_coords(ride.customer_id, plat, plng, dlat, dlng)
+    return jsonify({
+        "distance_km": q.distance_km,
+        "old_price_egp": float(ride.price_egp or 0),
+        "new_price_egp": float(q.ride_price_egp),
+        "commission_egp": float(q.commission_egp),
+    })
+
+
+@rides_api_bp.post("/rides/<int:ride_id>/change-locations")
+@jwt_required()
+def rides_change_locations(ride_id: int):
+    """Captain updates pickup and/or destination mid-trip.
+
+    The customer moved, or the driver realised the office paste was
+    wrong. Re-quotes on the new coords, updates addresses, fires the
+    standard price+ride update paths so the customer app and any
+    dispatcher WhatsApp see the change immediately.
+    """
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status not in ("assigned", "started"):
+        return jsonify({"error": "wrong_status", "status": ride.status}), 409
+
+    data = request.json or {}
+    try:
+        plat = float(data["pickup_lat"])
+        plng = float(data["pickup_lng"])
+        dlat = float(data["dropoff_lat"])
+        dlng = float(data["dropoff_lng"])
+    except (TypeError, KeyError, ValueError):
+        return jsonify({"error": "pickup + dropoff coords required"}), 400
+
+    from app.services import pricing as pricing_svc
+    from app.services import reverse_geocode as rg
+    from decimal import Decimal
+
+    q = pricing_svc.quote_by_coords(ride.customer_id, plat, plng, dlat, dlng)
+
+    ride.pickup_lat = plat
+    ride.pickup_lng = plng
+    ride.dropoff_lat = dlat
+    ride.dropoff_lng = dlng
+    ride.pickup_address = rg.resolve_place_name(plat, plng) or ride.pickup_address
+    ride.dropoff_address = rg.resolve_place_name(dlat, dlng) or ride.dropoff_address
+    ride.price_egp = Decimal(str(q.ride_price_egp))
+    ride.commission_egp = Decimal(str(q.commission_egp))
+
+    db.session.add(
+        RideStatusEvent(
+            ride_id=ride.id,
+            event="captain_changed_locations",
+            actor="captain",
+            payload_json=json.dumps(
+                {"pickup_lat": plat, "pickup_lng": plng,
+                 "dropoff_lat": dlat, "dropoff_lng": dlng,
+                 "price_egp": float(q.ride_price_egp)},
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.session.commit()
+
+    ride_payload = ride.to_dict(include_customer_contact=True)
+
+    # Fan-out: customer app socket + push, office WhatsApp text.
+    from app import socketio
+    from app.services import push_notifications as push
+    try:
+        socketio.emit(
+            "trip_status_changed",
+            {"ride": ride_payload},
+            namespace="/customer",
+            room=f"customer:{ride.customer_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("change-locations customer emit failed: %s", e)
+    try:
+        push.send_to_customer(
+            ride.customer_id,
+            title="🚗 اتغيرت الوجهة",
+            body=f"السعر: {float(ride.price_egp):.0f} ج.م · "
+                 f"{(ride.dropoff_address or '')[:60]}",
+            data={"kind": "ride_updated", "ride_id": ride.id},
+            collapse_key=f"ride_updated:{ride.id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("change-locations customer push failed: %s", e)
+
+    if ride.office_wa_id or (ride.source == "whatsapp" and ride.customer):
+        wa_id = ride.office_wa_id or ride.customer.wa_id
+        from app.services import whatsapp
+        try:
+            whatsapp.send_text(
+                wa_id,
+                "تعديل على رحلة #{id}\n"
+                "الاستلام: {p}\n"
+                "الوجهة: {d}\n"
+                "السعر: {price} ج.م".format(
+                    id=ride.id,
+                    p=ride.pickup_address or "—",
+                    d=ride.dropoff_address or "—",
+                    price=int(float(ride.price_egp or 0)),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            current_app.logger.warning("change-locations WA notice failed: %s", e)
+
+    return jsonify({
+        "ok": True,
+        "distance_km": q.distance_km,
+        "ride": ride_payload,
     })
 
 
