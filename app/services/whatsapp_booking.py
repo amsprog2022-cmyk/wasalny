@@ -387,7 +387,7 @@ def _next_question(session: AiSession) -> str:
         )
     if (session.service_kind or "private") == "delivery":
         return "الطلب رايح فين؟ اكتبلي العنوان. 📦"
-    return "رايح فين؟ اكتبلي اسم المكان. 🏁"
+    return "حضرتك رايح فين؟ 🏁"
 
 
 def _apply_service_choice(
@@ -413,14 +413,11 @@ def _apply_service_choice(
     if booked:
         return booked
 
-    # Reassure at the moment of choice rather than only after the pin
-    # arrives — otherwise the pickup question sits there feeling ignored.
+    # Sticker reassures at the moment of choice; the next question stands
+    # on its own — no "بنشوف اقرب كابتن لحضرتك" prefix because we haven't
+    # actually started searching yet (still need the pickup).
     _try_send_sticker(customer.wa_id, "booked", customer=customer)
-    _try_send(
-        customer.wa_id,
-        f"بنشوف اقرب كابتن لحضرتك.\n\n{_next_question(session)}",
-        customer=customer,
-    )
+    _try_send(customer.wa_id, _next_question(session), customer=customer)
     return {"handled": True, "action": "service_chosen", "service_kind": kind}
 
 
@@ -869,11 +866,12 @@ def process_incoming(customer: Customer, payload) -> dict:
                           message_body=message_body, session_id=session.id)
             return {"handled": True, "action": "handoff"}
         db.session.commit()
-        _try_send(
-            customer.wa_id,
-            result.reply_ar or _next_question(session),
-            customer=customer,
-        )
+        # Prefer our own state-aware next question over Gemini's canned
+        # reply_ar. Gemini writes reply_ar based on what IT thinks the
+        # session has — but by this point our resolvers may have moved
+        # things forward (e.g. filled pickup from a one-word reply that
+        # Gemini attributed to dropoff). Trust our state.
+        _try_send(customer.wa_id, _next_question(session), customer=customer)
         return {"handled": True, "action": "clarify"}
 
     # Booking flow — enforce confidence threshold on the AI parse itself.
