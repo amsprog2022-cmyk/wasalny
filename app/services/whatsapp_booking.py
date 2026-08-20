@@ -504,22 +504,35 @@ def _apply_pickup_from_pin(session: AiSession, lat: float, lng: float) -> None:
 
 
 def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str | None]:
-    """Try to geocode a free-text pickup. Returns (confident_hit, label).
+    """Try to geocode a free-text pickup. Returns (resolved, label).
 
-    On confident hit: saves lat/lng to session, returns (True, label).
-    On ambiguous / miss: leaves lat/lng untouched, returns (False, None).
+    Any hit (confident or ambiguous) is treated as good enough — the
+    captain calls the customer as soon as he accepts, so a "close-ish"
+    starting point plus a phone call beats forcing the customer to
+    figure out how to send a WhatsApp location pin. If our search
+    turns up nothing at all, THEN we ask for the pin.
+
+    Falls back to /search-places if the confidence-scored geocoder
+    misses — search accepts noisier queries like short place names
+    ("الفل", "الإعزام") that geocode_pickup rejects.
     """
+    if not text or not text.strip():
+        return False, None
     session.partial_pickup_text = text
     # Scope to Benha — same reasoning as _resolve_dropoff_from_text below.
     q = text if "بنها" in text else f"{text} بنها"
     hit = rg.geocode_pickup(q)
-    if hit is None:
-        return False, None
-    if not hit.get("confident"):
-        return False, hit.get("label")
-    session.partial_pickup_lat = hit["lat"]
-    session.partial_pickup_lng = hit["lng"]
-    return True, hit["label"]
+    if hit is not None:
+        session.partial_pickup_lat = hit["lat"]
+        session.partial_pickup_lng = hit["lng"]
+        return True, hit.get("label")
+    # Nothing from geocode_pickup — try the broader search as a fallback.
+    results = rg.search_places(q, limit=1)
+    if results:
+        session.partial_pickup_lat = results[0]["lat"]
+        session.partial_pickup_lng = results[0]["lng"]
+        return True, results[0].get("label")
+    return False, None
 
 
 def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
@@ -795,6 +808,19 @@ def process_incoming(customer: Customer, payload) -> dict:
             session, result.pickup_text,
         )
 
+    # Fallback for one-word replies where Gemini didn't extract pickup_text.
+    # Customer wrote e.g. "الفل!" or "الإعزام" after we asked "حضرتك فين
+    # دلوقتي؟" — before this fallback, that reply just bounced back the same
+    # question until the clarify counter blew and it went to handoff. Now we
+    # try /search-places on the raw message and dispatch on any hit.
+    if (not pickup_confident
+            and session.partial_pickup_lat is None
+            and message_body
+            and 2 <= len(message_body) <= 60):
+        pickup_confident, pickup_ambiguous_label = _resolve_pickup_from_text(
+            session, message_body,
+        )
+
     # Try to book BEFORE the clarify handler — the fallback above may have
     # just filled in the missing dropoff, in which case Gemini's "I need
     # more info" verdict is stale. Book if we now have everything;
@@ -836,15 +862,16 @@ def process_incoming(customer: Customer, payload) -> dict:
         if booked:
             return booked
 
-    # We got pickup text but couldn't confidently geocode it → ask for a
-    # WhatsApp 📍 pin instead of gambling on a fuzzy match.
+    # Genuine geocode miss (both geocode_pickup + search returned nothing).
+    # Ask for the pin or a more specific place name — this is the rare
+    # case now that _resolve_pickup_from_text accepts any hit.
     if result.pickup_text and not pickup_confident:
         db.session.commit()
-        hint = f" (اللي لقيته: {pickup_ambiguous_label})" if pickup_ambiguous_label else ""
         _try_send(
             customer.wa_id,
-            "معلش، مش قادر أحدد مكانك بالظبط" + hint + ".\n"
-            "يرجى إرسال موقعك: دوس على 📎 المرفقات ← الموقع ← ابعت موقعك الحالي.",
+            f"مش قادر ألاقي '{result.pickup_text}' في بنها. "
+            "جرب تكتب اسم مكان معروف قريب منك (مثال: جامعة بنها، شبرا الشورى)، "
+            "أو ابعت موقعك: 📎 المرفقات ← الموقع ← ابعت موقعك الحالي.",
             customer=customer,
         )
         return {"handled": True, "action": "await_pin"}
