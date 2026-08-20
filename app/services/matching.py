@@ -213,6 +213,10 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
     else:
         net_egp = float(ride.price_egp) * (1 - float(current_app.config.get("WASSALNY_COMMISSION_RATE", "0.15")))
         body_ar = f"من {from_txt} إلى {to_txt} · صافي {net_egp:.0f} ج.م"
+    # Inline the ride payload as JSON so the captain app can hydrate the
+    # TripOfferScreen the moment the notification is tapped — no need to
+    # wait for the /driver/active-ride REST roundtrip after cold-open.
+    # FCM data has a ~4KB cap; ride.to_dict() is comfortably under.
     push.send_to_drivers(
         id_list,
         title="🔔 رحلة جديدة",
@@ -221,6 +225,10 @@ def _emit_offer(ride: Ride, driver_ids: Iterable[int]) -> None:
             "kind": "trip_offered",
             "ride_id": ride.id,
             "expires_in_seconds": _accept_window(),
+            "ride_json": json.dumps(
+                ride.to_dict(include_customer_contact=True),
+                default=str, ensure_ascii=False,
+            ),
         },
         collapse_key=f"ride:{ride.id}",
     )
