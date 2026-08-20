@@ -788,20 +788,14 @@ def process_incoming(customer: Customer, payload) -> dict:
     if result.dropoff_text:
         _resolve_dropoff_from_text(session, result.dropoff_text)
 
-    # Fallback for the "بنها" case: pickup already pinned, we've clearly
-    # asked "رايح فين؟", customer replied with a short place name, but
-    # Gemini didn't pull it into dropoff_text. Use the raw message as the
-    # destination text so the customer doesn't get stuck in a loop of the
-    # bot asking the same question after every one-word answer.
-    if (session.partial_pickup_lat is not None
-            and not session.partial_dropoff_text
-            and message_body
-            and 2 <= len(message_body) <= 60):
-        _resolve_dropoff_from_text(session, message_body)
+    # Remember pickup state BEFORE the pickup fallback runs so we can tell
+    # whether this same message filled it. If it did, the dropoff-fallback
+    # below must NOT also treat the message as a destination — otherwise a
+    # one-word "الفل" ends up as both ends and the ride books itself with
+    # pickup == dropoff and a zero-km price.
+    pickup_was_set_before = session.partial_pickup_lat is not None
 
-    pickup_confident = (
-        session.partial_pickup_lat is not None and session.partial_pickup_lng is not None
-    )
+    pickup_confident = pickup_was_set_before
     pickup_ambiguous_label: str | None = None
     if not pickup_confident and result.pickup_text:
         pickup_confident, pickup_ambiguous_label = _resolve_pickup_from_text(
@@ -814,12 +808,24 @@ def process_incoming(customer: Customer, payload) -> dict:
     # question until the clarify counter blew and it went to handoff. Now we
     # try /search-places on the raw message and dispatch on any hit.
     if (not pickup_confident
-            and session.partial_pickup_lat is None
+            and not pickup_was_set_before
             and message_body
             and 2 <= len(message_body) <= 60):
         pickup_confident, pickup_ambiguous_label = _resolve_pickup_from_text(
             session, message_body,
         )
+
+    # Destination-side fallback for the "رايح فين؟" question — only fires
+    # when pickup was ALREADY set before this turn. Reason: on a fresh
+    # session the pickup fallback above may have just consumed the same
+    # short message; treating it as dropoff too would make pickup ==
+    # dropoff. Once pickup exists from a prior turn, a short reply is
+    # unambiguously the destination.
+    if (pickup_was_set_before
+            and not session.partial_dropoff_text
+            and message_body
+            and 2 <= len(message_body) <= 60):
+        _resolve_dropoff_from_text(session, message_body)
 
     # Try to book BEFORE the clarify handler — the fallback above may have
     # just filled in the missing dropoff, in which case Gemini's "I need
