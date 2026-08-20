@@ -353,15 +353,19 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
 
     if is_private:
         # Proactive "we're searching" message — matches the plan-approved UX
-        # decision so the customer isn't left in silence for 2-3 min. Also
-        # quotes the calculated price up-front when both ends are geocoded,
-        # so the customer knows what they'll pay before the captain arrives.
+        # decision so the customer isn't left in silence for 2-3 min. Quotes
+        # the calculated price up-front when both ends are geocoded; when
+        # only the dropoff text is known (landmark descriptions Nominatim
+        # can't resolve) we say the price will be set on arrival so the
+        # customer isn't left wondering why no fare appeared.
         parts = [f"تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"]
         if ride.dropoff_address:
             parts.append(f" لينزلك في {ride.dropoff_address}")
         parts.append(".")
         if ride.price_egp and float(ride.price_egp) > 0:
             parts.append(f"\nسعر الرحلة: {float(ride.price_egp):.0f} ج.م")
+        else:
+            parts.append("\nالكابتن هيتفق معاك على السعر لما يوصل.")
         parts.append(" 🚗")
         _try_send(customer.wa_id, "".join(parts), customer=customer)
         matching.start_matching(ride.id, pending_fee_ids=pending_ids)
@@ -570,6 +574,11 @@ def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str 
     return False, None
 
 
+_LANDMARK_SPLIT = re.compile(
+    r"\s*(?:قدام|جنب|بجوار|أمام|امام|قبل|بعد|جوار|عند)\s+"
+)
+
+
 def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
     """Geocode dropoff best-effort. Any hit is fine — the captain confirms
     with the customer at pickup, and pricing is coord-based only when we
@@ -580,19 +589,37 @@ def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
     a hit in Alexandria or a different governorate. Nothing added when
     the text already mentions Benha.
 
+    If the full phrase misses (customer typed a landmark description
+    like "بطا قدام قاعة ليالينا"), split on Arabic locative prepositions
+    and try each side — one of them is usually a real POI. That's the
+    difference between the captain getting a priced trip vs one with
+    price=0 that needs the on-arrival flow.
+
     If we get a hit, store the returned label as partial_dropoff_text so
     it becomes the dropoff address the captain sees — same reasoning as
     pickup: the search's label is more meaningful than reverse-geocoding
     the coords back to a random neighbouring street.
     """
     session.partial_dropoff_text = text
-    q = text if "بنها" in text else f"{text} بنها القليوبية"
-    results = rg.search_places(q, limit=1)
-    if results:
-        session.partial_dropoff_lat = results[0]["lat"]
-        session.partial_dropoff_lng = results[0]["lng"]
-        if results[0].get("label"):
-            session.partial_dropoff_text = results[0]["label"]
+
+    def _scope(t: str) -> str:
+        return t if "بنها" in t else f"{t} بنها القليوبية"
+
+    candidates = [text]
+    # Landmark-description path: "بطا قدام قاعة ليالينا" → ["بطا قدام قاعة
+    # ليالينا", "بطا", "قاعة ليالينا"]. First hit wins.
+    parts = [p.strip() for p in _LANDMARK_SPLIT.split(text) if p.strip()]
+    if len(parts) > 1:
+        candidates.extend(parts)
+
+    for candidate in candidates:
+        results = rg.search_places(_scope(candidate), limit=1)
+        if results:
+            session.partial_dropoff_lat = results[0]["lat"]
+            session.partial_dropoff_lng = results[0]["lng"]
+            if results[0].get("label"):
+                session.partial_dropoff_text = results[0]["label"]
+            return
 
 
 def process_incoming(customer: Customer, payload) -> dict:
