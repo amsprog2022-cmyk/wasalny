@@ -303,6 +303,24 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
     if not session.partial_dropoff_text:
         return None
 
+    # Guard against pickup == dropoff (both ends resolved to the same
+    # coord — usually from a short one-word reply that mis-attributed).
+    # Book with a zero-km trip is worse than asking for a real dropoff.
+    if (session.partial_dropoff_lat is not None
+            and session.partial_dropoff_lng is not None):
+        same_point = (
+            abs(session.partial_pickup_lat - session.partial_dropoff_lat) < 1e-4
+            and abs(session.partial_pickup_lng - session.partial_dropoff_lng) < 1e-4
+        )
+        if same_point:
+            # Wipe the bad dropoff so the caller falls through to the
+            # "رايح فين؟" prompt on the next turn.
+            session.partial_dropoff_text = None
+            session.partial_dropoff_lat = None
+            session.partial_dropoff_lng = None
+            db.session.commit()
+            return None
+
     _try_send_sticker(customer.wa_id, "booked", customer=customer)
 
     try:
@@ -785,15 +803,21 @@ def process_incoming(customer: Customer, payload) -> dict:
         session.partial_pickup_slug = result.from_zone_slug
     if result.to_zone_slug:
         session.partial_dropoff_slug = result.to_zone_slug
-    if result.dropoff_text:
-        _resolve_dropoff_from_text(session, result.dropoff_text)
-
-    # Remember pickup state BEFORE the pickup fallback runs so we can tell
-    # whether this same message filled it. If it did, the dropoff-fallback
-    # below must NOT also treat the message as a destination — otherwise a
+    # Remember pickup state BEFORE any resolver runs so we can tell whether
+    # this same message filled it. If it did, the dropoff-fallback below
+    # must NOT also treat the message as a destination — otherwise a
     # one-word "الفل" ends up as both ends and the ride books itself with
     # pickup == dropoff and a zero-km price.
     pickup_was_set_before = session.partial_pickup_lat is not None
+
+    # Only accept Gemini's dropoff_text when we already have a pickup.
+    # On turn 1 the customer typing "الفل" is telling us WHERE HE IS, not
+    # where he wants to go — but Gemini frequently mis-attributes short
+    # replies to dropoff. Letting it through fills partial_dropoff_lat
+    # with the same coord the pickup fallback below will pick, and the
+    # ride books instantly with a 0-km trip.
+    if result.dropoff_text and pickup_was_set_before:
+        _resolve_dropoff_from_text(session, result.dropoff_text)
 
     pickup_confident = pickup_was_set_before
     pickup_ambiguous_label: str | None = None
