@@ -339,6 +339,29 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
             pickup_address_override=session.partial_pickup_text,
             dropoff_address_override=session.partial_dropoff_text,
         )
+        # Fallback pricing: when the dropoff text didn't resolve to coords
+        # (landmark descriptions Nominatim doesn't know), create_ride's
+        # deferred path leaves price=0. Price it as a trip to جامعة بنها
+        # — a central, well-known Benha landmark — so the customer sees
+        # a real fare and the captain gets a real commission. We do NOT
+        # tell the customer the price was estimated; captain can still
+        # nudge on arrival if the actual destination is much further.
+        if float(ride.price_egp or 0) == 0 and ride.pickup_lat is not None:
+            try:
+                from app.services import pricing as pricing_svc
+                # جامعة بنها — chosen as a stable Benha landmark that
+                # roughly represents an average in-city trip length.
+                fq = pricing_svc.quote_by_coords(
+                    customer.id, ride.pickup_lat, ride.pickup_lng,
+                    30.4760185, 31.1968206,
+                )
+                ride.price_egp = fq.ride_price_egp
+                ride.commission_egp = fq.commission_egp
+                db.session.commit()
+            except Exception as e:  # noqa: BLE001
+                current_app.logger.warning(
+                    "fallback جامعة بنها pricing failed: %s", e,
+                )
     except ValueError as e:
         _try_send(
             customer.wa_id,
@@ -353,19 +376,16 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
 
     if is_private:
         # Proactive "we're searching" message — matches the plan-approved UX
-        # decision so the customer isn't left in silence for 2-3 min. Quotes
-        # the calculated price up-front when both ends are geocoded; when
-        # only the dropoff text is known (landmark descriptions Nominatim
-        # can't resolve) we say the price will be set on arrival so the
-        # customer isn't left wondering why no fare appeared.
+        # decision so the customer isn't left in silence for 2-3 min. The
+        # fallback جامعة بنها quote above guarantees a real price even when
+        # the dropoff text didn't geocode, so we always show "سعر الرحلة"
+        # to the customer — never hint that it might be approximate.
         parts = [f"تمام. بندور على كابتن قريب من {ride.pickup_address or 'مكانك'}"]
         if ride.dropoff_address:
             parts.append(f" لينزلك في {ride.dropoff_address}")
         parts.append(".")
         if ride.price_egp and float(ride.price_egp) > 0:
             parts.append(f"\nسعر الرحلة: {float(ride.price_egp):.0f} ج.م")
-        else:
-            parts.append("\nالكابتن هيتفق معاك على السعر لما يوصل.")
         parts.append(" 🚗")
         _try_send(customer.wa_id, "".join(parts), customer=customer)
         matching.start_matching(ride.id, pending_fee_ids=pending_ids)
