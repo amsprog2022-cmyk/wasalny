@@ -332,6 +332,12 @@ def _try_book_ride(customer: Customer, session: AiSession) -> Optional[dict]:
             dropoff_lng=session.partial_dropoff_lng,
             source="whatsapp",
             service_kind=kind,
+            # Prefer the search's own label over a reverse-geocode
+            # roundtrip. Nominatim's forward + reverse geocoders don't
+            # always agree — sending سندنهور then having reverse return
+            # "شارع عماد مهدى" burns trust with the captain.
+            pickup_address_override=session.partial_pickup_text,
+            dropoff_address_override=session.partial_dropoff_text,
         )
     except ValueError as e:
         _try_send(
@@ -530,22 +536,36 @@ def _resolve_pickup_from_text(session: AiSession, text: str) -> tuple[bool, str 
     Falls back to /search-places if the confidence-scored geocoder
     misses — search accepts noisier queries like short place names
     ("الفل", "الإعزام") that geocode_pickup rejects.
+
+    Stores the RESOLVED label (not the raw user text) into
+    `partial_pickup_text` so `_try_book_ride` can use it as the pickup
+    address that reaches the captain. Reverse-geocoding the coords back
+    to a street name (what create_ride does when no override is passed)
+    frequently returns a random neighbouring street instead of the
+    landmark the customer asked for — the search's own label is
+    stable and matches what they typed.
     """
     if not text or not text.strip():
         return False, None
     session.partial_pickup_text = text
-    # Scope to Benha — same reasoning as _resolve_dropoff_from_text below.
-    q = text if "بنها" in text else f"{text} بنها"
+    # Scope to Benha + قليوبية so Nominatim doesn't return "سندنهور" from
+    # a different governorate. Cheaper to over-qualify than to accept a
+    # wrong hit that would send the captain to a stranger's door.
+    q = text if "بنها" in text else f"{text} بنها القليوبية"
     hit = rg.geocode_pickup(q)
     if hit is not None:
         session.partial_pickup_lat = hit["lat"]
         session.partial_pickup_lng = hit["lng"]
+        if hit.get("label"):
+            session.partial_pickup_text = hit["label"]
         return True, hit.get("label")
     # Nothing from geocode_pickup — try the broader search as a fallback.
     results = rg.search_places(q, limit=1)
     if results:
         session.partial_pickup_lat = results[0]["lat"]
         session.partial_pickup_lng = results[0]["lng"]
+        if results[0].get("label"):
+            session.partial_pickup_text = results[0]["label"]
         return True, results[0].get("label")
     return False, None
 
@@ -555,16 +575,24 @@ def _resolve_dropoff_from_text(session: AiSession, text: str) -> None:
     with the customer at pickup, and pricing is coord-based only when we
     have both ends. Missing dropoff coords just falls back to captain-set.
 
-    We scope the search to Benha: if the customer typed just "منشية" we
-    query "منشية بنها" so Nominatim doesn't return a hit in Alexandria.
-    Nothing added when the text already mentions Benha.
+    We scope the search to Benha + قليوبية: if the customer typed just
+    "منشية" we query "منشية بنها القليوبية" so Nominatim doesn't return
+    a hit in Alexandria or a different governorate. Nothing added when
+    the text already mentions Benha.
+
+    If we get a hit, store the returned label as partial_dropoff_text so
+    it becomes the dropoff address the captain sees — same reasoning as
+    pickup: the search's label is more meaningful than reverse-geocoding
+    the coords back to a random neighbouring street.
     """
     session.partial_dropoff_text = text
-    q = text if "بنها" in text else f"{text} بنها"
+    q = text if "بنها" in text else f"{text} بنها القليوبية"
     results = rg.search_places(q, limit=1)
     if results:
         session.partial_dropoff_lat = results[0]["lat"]
         session.partial_dropoff_lng = results[0]["lng"]
+        if results[0].get("label"):
+            session.partial_dropoff_text = results[0]["label"]
 
 
 def process_incoming(customer: Customer, payload) -> dict:

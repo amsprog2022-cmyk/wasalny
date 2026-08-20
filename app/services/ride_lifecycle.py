@@ -98,6 +98,8 @@ def create_ride(
     source: str = "app",
     service_kind: str = "private",
     coupon_code: str | None = None,
+    pickup_address_override: str | None = None,
+    dropoff_address_override: str | None = None,
 ) -> tuple[Ride, list[int]]:
     """Create a `new` ride.
 
@@ -114,16 +116,21 @@ def create_ride(
     has_dropoff_gps = dropoff_lat is not None and dropoff_lng is not None
 
     # Auto-resolve pickup zone from GPS so admin filters + reports still work
-    # even though matching now uses coordinates.
-    pickup_address = None
-    dropoff_address = None
+    # even though matching now uses coordinates. Callers can pass an
+    # explicit pickup_address_override to skip the reverse-geocode step —
+    # the WhatsApp booking flow uses this so the captain sees the exact
+    # place name the customer typed (or the search's own label) instead
+    # of a possibly-different street the reverse geocoder returns.
+    pickup_address = pickup_address_override
+    dropoff_address = dropoff_address_override
     if has_pickup_gps and from_zone_id is None:
         try:
             from app.services import reverse_geocode as rg
             zone = rg.resolve_zone(pickup_lat, pickup_lng) or rg.default_zone()
             if zone is not None:
                 from_zone_id = zone.id
-            pickup_address = rg.resolve_place_name(pickup_lat, pickup_lng)
+            if pickup_address is None:
+                pickup_address = rg.resolve_place_name(pickup_lat, pickup_lng)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("pickup reverse-geocode failed: %s", e)
 
@@ -137,7 +144,8 @@ def create_ride(
             zone = rg.resolve_zone(dropoff_lat, dropoff_lng)
             if zone is not None:
                 to_zone_id = zone.id
-            dropoff_address = rg.resolve_place_name(dropoff_lat, dropoff_lng)
+            if dropoff_address is None:
+                dropoff_address = rg.resolve_place_name(dropoff_lat, dropoff_lng)
         except Exception as e:  # noqa: BLE001
             current_app.logger.warning("dropoff reverse-geocode failed: %s", e)
 
