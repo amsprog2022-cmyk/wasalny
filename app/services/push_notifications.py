@@ -115,7 +115,10 @@ def _build_message(m, string_data: dict, *, title: str, body: str,
     title/body into the APNS alert block so iOS still notifies. Everything
     that isn't a trip offer keeps the old notification+data shape.
     """
-    channel_id = "ride_offer" if is_ride_offer else "wassalny_default"
+    # Channel id must match the Dart client (`_rideOfferChannelId`).
+    # Only referenced when we attach a notification block — trip-offered
+    # stays data-only on Android so the Dart handler renders the alarm.
+    channel_id = "ride_offer_v2" if is_ride_offer else "wassalny_default"
 
     if is_ride_offer:
         # Preserve title/body inside data — the Dart killed-state handler
@@ -134,7 +137,10 @@ def _build_message(m, string_data: dict, *, title: str, body: str,
             payload=m.APNSPayload(
                 aps=m.Aps(
                     alert=m.ApsAlert(title=title, body=body),
-                    sound="default",
+                    # Custom alarm bundled with the captain app. On iOS the
+                    # OS-rendered notification uses this sound; without it
+                    # the ride offer would still play the system default.
+                    sound="ride_offer.caf",
                     content_available=True,
                     mutable_content=True,
                     custom_data={"interruption-level": "time-sensitive"},
