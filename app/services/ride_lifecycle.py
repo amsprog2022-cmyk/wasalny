@@ -428,9 +428,13 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
         ride.waiting_seconds = int(ride.waiting_seconds or 0) + max(0, int(elapsed))
         ride.waiting_started_at = None
     conf = settings_svc.get_pricing()
-    free_secs = int(conf["free_wait_minutes"]) * 60
     per_hour = conf["per_waiting_hour_egp"]
-    billable_secs = max(0, int(ride.waiting_seconds or 0) - free_secs)
+    # The free_wait_minutes grace period is already spent as a hard gate on
+    # /waiting/toggle — the captain can't press "start" before it elapses.
+    # Subtracting it again here would double-dip and leave every session
+    # under 5 minutes billing at 0 EGP even though the button only appeared
+    # after the free window was over.
+    billable_secs = max(0, int(ride.waiting_seconds or 0))
     if billable_secs > 0:
         price = (
             Decimal(billable_secs) / Decimal(3600) * per_hour
