@@ -103,15 +103,26 @@ def extract_phone(text: str) -> tuple[Optional[str], str]:
         return None, ""
 
     ascii_text = text.translate(_DIGIT_MAP)
-    # Collapse separators that sit *between* digits so "0105 008 4115" reads
-    # as one run, without gluing together two numbers on separate lines.
-    joined = re.sub(r"(?<=\d)[\s\-–—./]+(?=\d)", "", ascii_text)
 
+    # Prefer natural digit runs first — a message like
+    # "فلل ل أهرام ب 50 01016140001" has a price and a phone separated by a
+    # space, and collapsing across the gap would merge them into a 13-digit
+    # blob that matches nothing. Try uncollapsed here, and only fall back to
+    # the collapse trick if no phone-shaped run stands on its own.
+    for match in sorted(_DIGIT_RUN.finditer(ascii_text),
+                        key=lambda m: len(m.group(0)), reverse=True):
+        run = match.group(0)
+        wa_id = _to_wa_id(run) or _to_wa_id(run[::-1])
+        if wa_id:
+            leftover = ascii_text[:match.start()] + " " + ascii_text[match.end():]
+            return wa_id, _clean_leftover(leftover)
+
+    # Collapse separators between digits so "0105 008 4115" reads as one run,
+    # without gluing together two numbers on separate lines.
+    joined = re.sub(r"(?<=\d)[\s\-–—./]+(?=\d)", "", ascii_text)
     for match in sorted(_DIGIT_RUN.finditer(joined),
                         key=lambda m: len(m.group(0)), reverse=True):
         run = match.group(0)
-        # Forward first — a genuine number is never flipped just because its
-        # mirror also happens to parse.
         wa_id = _to_wa_id(run) or _to_wa_id(run[::-1])
         if wa_id:
             leftover = joined[:match.start()] + " " + joined[match.end():]
@@ -129,6 +140,15 @@ _TRAILING_PRICE = re.compile(
     r"\s*(\d{1,4})\s*(?:ج\s*\.?\s*م|جنيه|جنيها|EGP)?\s*$",
     re.IGNORECASE,
 )
+# Explicit price marker: "ب 50", "بـ50", "بـ 50 جنيه". The office typed the
+# new format as "فلل ل أهرام ب 50 01016140001" — a bare integer on its own
+# is ambiguous with a house number, so this marker is what makes it safe.
+# Requires whitespace/start before ب so "بنها" and other place names that
+# begin with the letter don't get eaten as a price.
+_MARKED_PRICE = re.compile(
+    r"(?:^|\s)ب\s*ـ?\s*(\d{1,4})\s*(?:ج\s*\.?\s*م|جنيه|جنيها|EGP)?(?=\s|$)",
+    re.IGNORECASE,
+)
 
 
 def parse_office_message(text: str) -> dict:
@@ -143,12 +163,16 @@ def parse_office_message(text: str) -> dict:
         }
 
     Format the office actually types:
-        "01012818977 سندنهور - بنها 70"
+        "فلل ل أهرام ب 50 01016140001"         (place ب price phone — new)
+        "01016140001 فلل ل أهرام ب 50"         (phone at start, ب price — new)
+        "01012818977 سندنهور - بنها 70"        (legacy: dash + trailing price)
         "01012818977 سندنهور"                  (pickup only, price auto)
         "01012818977 - بنها 70"                (dropoff + price, no pickup)
         "01012818977"                          (bare number, blast to captains)
 
-    The trailing integer, if present, ALWAYS wins over the km-based price.
+    Any explicit price (marked "ب ..." OR trailing digits) wins over the
+    km-based auto-price. The ب-marked form is preferred because a bare
+    trailing integer is ambiguous with a house number.
     Any dash character between fields splits pickup from dropoff.
     """
     wa_id, leftover = extract_phone(text)
@@ -158,19 +182,32 @@ def parse_office_message(text: str) -> dict:
     body = (leftover or "").strip()
     price: Optional[float] = None
 
-    # Trailing price first — strip before splitting on the dash so the
-    # dash-split doesn't mistake "70" for a dropoff word.
-    m = _TRAILING_PRICE.search(body)
+    # "ب 50" marker first — unambiguous, so try it before the trailing
+    # integer heuristic. If matched, cut it out anywhere it appears (the
+    # office might put it before or after the place name).
+    m = _MARKED_PRICE.search(body)
     if m:
         try:
             price = float(m.group(1))
         except ValueError:
             price = None
-        # Only trim the price token if we successfully parsed it, so
-        # "شقة 5" (which would match) still keeps its digits when we
-        # can't coerce them cleanly.
         if price is not None:
-            body = body[: m.start()].strip(" -–—_/.,،")
+            body = (body[: m.start()] + " " + body[m.end():]).strip(" -–—_/.,،")
+
+    # Trailing price fallback for the legacy format. Skipped if the marked
+    # price already fired so we don't double-strip.
+    if price is None:
+        m = _TRAILING_PRICE.search(body)
+        if m:
+            try:
+                price = float(m.group(1))
+            except ValueError:
+                price = None
+            # Only trim the price token if we successfully parsed it, so
+            # "شقة 5" (which would match) still keeps its digits when we
+            # can't coerce them cleanly.
+            if price is not None:
+                body = body[: m.start()].strip(" -–—_/.,،")
 
     # Split pickup / dropoff on any dash. Missing dash → whole text is pickup.
     parts = _DEST_SEP.split(body, maxsplit=1)
