@@ -1090,11 +1090,7 @@ def _emit_no_driver_alert(ride: Ride) -> None:
         try:
             from app.services import whatsapp as wa
             from app.services import whatsapp_booking
-            body = (
-                "😔 معلش، مفيش كابتن متاح دلوقتي في المنطقة دي. "
-                "الأدمن هيتواصل معاك ويشوفلك حل. "
-                "لو مش عايز تكمل، رد بكلمة \"إلغاء\"."
-            )
+            body = "بندور علي كابتن لحضرتك حد من الادارة هيتواصل مع حضرتك"
             resp = wa.send_text(ride.customer.wa_id, body)
             wa_msg_id = None
             if isinstance(resp, dict):
