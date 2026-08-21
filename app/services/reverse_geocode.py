@@ -369,9 +369,18 @@ def search_places(query: str, limit: int = 6) -> list[dict]:
     """Forward-geocode free text into candidate destinations.
 
     Returns [{"label": str, "lat": float, "lng": float}, ...] biased to
-    Qalyubia + Greater Cairo, Arabic labels. Backed by the same 24h cache
-    used for pickup-confidence scoring.
+    Benha. Google Places (New) is the primary source — much better Arabic
+    coverage of local landmarks ("كلية علوم", "قاعة ليالينا", etc.) than
+    Nominatim which was returning wrong hits or nothing at all. Nominatim
+    stays as the fallback for outages, missing API key, or quota events.
     """
+    from app.services import google_places
+    hits = google_places.search_places(query, limit=limit)
+    if hits is not None:
+        # Google gave us a real answer (possibly []). Trust it — empty
+        # means "we searched and found nothing", which is different from
+        # "we didn't search" (None).
+        return hits
     return [
         {"label": r["label"], "lat": r["lat"], "lng": r["lng"]}
         for r in _nominatim_search_raw(query, limit=limit)
@@ -381,17 +390,26 @@ def search_places(query: str, limit: int = 6) -> list[dict]:
 def geocode_pickup(text: str) -> Optional[dict]:
     """Forward-geocode a free-text pickup for the WhatsApp AI booking flow.
 
-    Returns {"lat", "lng", "label", "confident": bool} or None if Nominatim
-    yielded nothing. A hit is `confident` when we're OK feeding it into the
-    GPS matcher without asking the customer to send a WhatsApp 📍 pin:
+    Returns {"lat", "lng", "label", "confident": bool} or None if nothing
+    resolved. A hit is `confident` when we're OK feeding it into the GPS
+    matcher without asking the customer to send a WhatsApp 📍 pin.
 
-    - only one candidate returned (no ambiguity), OR
-    - top result's OSM class is a landmark-ish category (hospital, station,
-      university, etc.), OR
-    - the bounding box is tight (<~500m across).
-
-    Callers should fall back to asking for a location pin when confident=False.
+    Tries Google Places first (better Arabic coverage of local landmarks —
+    "كلية علوم" resolves cleanly where Nominatim missed it). Google's own
+    ranking is trustworthy, so its top hit is treated as confident. Falls
+    back to Nominatim + bbox scoring when Google is unavailable.
     """
+    from app.services import google_places
+    g_hits = google_places.search_places(text, limit=3)
+    if g_hits is not None and g_hits:
+        top = g_hits[0]
+        return {
+            "lat": top["lat"],
+            "lng": top["lng"],
+            "label": top["label"],
+            "confident": True,
+        }
+
     results = _nominatim_search_raw(text, limit=3)
     if not results:
         return None
