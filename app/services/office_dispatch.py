@@ -373,6 +373,12 @@ def handle_office_message(office_wa_id: str, body: str) -> None:
             dropoff_lng=(dropoff_place["lng"] if dropoff_place else None),
             source="office",
             service_kind="private",
+            # Pin the visible addresses to what the office typed. Without
+            # these overrides, create_ride's reverse-geocode writes whatever
+            # Nominatim thinks the coords are — the captain would see
+            # "شارع الزراعيه" instead of the office's "فلل".
+            pickup_address_override=(parsed["pickup"] or None),
+            dropoff_address_override=(parsed["dropoff"] or None),
         )
     except Exception as e:  # noqa: BLE001
         current_app.logger.exception("office ride creation failed: %s", e)
@@ -380,12 +386,6 @@ def handle_office_message(office_wa_id: str, body: str) -> None:
         return
 
     ride.office_wa_id = office_wa_id
-    # Keep whatever the office typed as the visible address when the
-    # geocoder failed — that's all the captain has to go on before he calls.
-    if not ride.pickup_address and parsed["pickup"]:
-        ride.pickup_address = parsed["pickup"]
-    if not ride.dropoff_address and parsed["dropoff"]:
-        ride.dropoff_address = parsed["dropoff"]
 
     # Explicit trailing price wins over the km-based auto-quote. Commission
     # is re-derived from the current commission_rate setting so an admin
