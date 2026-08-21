@@ -131,9 +131,11 @@ def extract_phone(text: str) -> tuple[Optional[str], str]:
     return None, _clean_leftover(ascii_text)
 
 
-# Any of the dashes offices type between pickup and dropoff. Bracketed
-# so it's easy to test each variant.
-_DEST_SEP = re.compile(r"\s*[-–—_]\s*")
+# Any of the dashes offices type between pickup and dropoff, OR the Arabic
+# preposition "ل" (to) surrounded by whitespace — the new office format uses
+# "فلل ل أهرام" to mean pickup=فلل, dropoff=أهرام. Whitespace on both sides
+# is required so "ل" inside a word (e.g. "الفل") doesn't split the place.
+_DEST_SEP = re.compile(r"\s+ل\s+|\s*[-–—_]\s*")
 # Trailing integer (Egyptian pound amount). Matches "70", "70 ج.م", "70 جنيه".
 # Anchored to end-of-text so a house number mid-address never gets grabbed.
 _TRAILING_PRICE = re.compile(
@@ -163,8 +165,8 @@ def parse_office_message(text: str) -> dict:
         }
 
     Format the office actually types:
-        "فلل ل أهرام ب 50 01016140001"         (place ب price phone — new)
-        "01016140001 فلل ل أهرام ب 50"         (phone at start, ب price — new)
+        "فلل ل أهرام ب 50 01016140001"         (pickup ل dropoff ب price phone)
+        "01016140001 فلل ل أهرام ب 50"         (phone at start, ل + ب — new)
         "01012818977 سندنهور - بنها 70"        (legacy: dash + trailing price)
         "01012818977 سندنهور"                  (pickup only, price auto)
         "01012818977 - بنها 70"                (dropoff + price, no pickup)
