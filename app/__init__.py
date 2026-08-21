@@ -580,10 +580,52 @@ def _apply_lightweight_migrations(app):
                     "ALTER TABLE drivers ADD COLUMN wants_chained_rides "
                     "BOOLEAN NOT NULL DEFAULT 1"
                 ))
+
+        # Waiting-time charging. arrived_at is stamped by
+        # ride_lifecycle.arrived() to anchor the free grace period; the
+        # three waiting_* columns accumulate a running total the captain
+        # toggles on/off during the trip. Finalized inside complete().
+        if dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS arrived_at TIMESTAMP"
+            ))
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS waiting_started_at TIMESTAMP"
+            ))
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS waiting_seconds "
+                "INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE rides ADD COLUMN IF NOT EXISTS waiting_price_egp "
+                "NUMERIC(8, 2) NOT NULL DEFAULT 0"
+            ))
+        elif dialect == "sqlite":
+            existing_rides = {row[1] for row in conn.execute(
+                text("PRAGMA table_info(rides)")
+            ).fetchall()}
+            if "arrived_at" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN arrived_at TIMESTAMP"
+                ))
+            if "waiting_started_at" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN waiting_started_at TIMESTAMP"
+                ))
+            if "waiting_seconds" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN waiting_seconds "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ))
+            if "waiting_price_egp" not in existing_rides:
+                conn.execute(text(
+                    "ALTER TABLE rides ADD COLUMN waiting_price_egp "
+                    "NUMERIC(8, 2) NOT NULL DEFAULT 0"
+                ))
     # The wallet tables (customer + driver) are new tables — db.create_all()
     # handles them automatically; no ALTER needed. Print here so we can see it
     # ran on every boot.
-    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon + office_wa_id + chained_rides ensured")
+    print("[migrate] FCM + password_hash + deleted_at + nullable to_zone_id + clarify_count + driver_position + ride_gps + ride_addresses + ai_session_gps + service_kind + wa_menu + wallet + captain_extra + phone_verified_at + driver_wallet + change_credit + coupon + office_wa_id + chained_rides + waiting ensured")
 
 
 def _init_sentry(app):

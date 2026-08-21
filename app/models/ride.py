@@ -97,10 +97,22 @@ class Ride(db.Model):
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     assigned_at = db.Column(db.DateTime)
+    # Stamped by ride_lifecycle.arrived() — captain reached the pickup.
+    # The "free waiting minutes" grace period is measured from this.
+    arrived_at = db.Column(db.DateTime)
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
     cancelled_at = db.Column(db.DateTime)
     cancel_reason = db.Column(db.String(120))
+
+    # Waiting-time charging. Captain toggles a "بدأ الانتظار" button after
+    # the grace period at pickup, or any time during the trip when the
+    # customer stops him. `waiting_started_at` is only set while a session
+    # is open; on stop we add the elapsed seconds into `waiting_seconds`
+    # and NULL it. `waiting_price_egp` is finalized inside complete().
+    waiting_started_at = db.Column(db.DateTime)
+    waiting_seconds = db.Column(db.Integer, default=0, nullable=False)
+    waiting_price_egp = db.Column(db.Numeric(8, 2), default=0, nullable=False)
 
     rating = db.Column(db.Integer)          # 1..5
     rating_comment = db.Column(db.Text)
@@ -129,6 +141,7 @@ class Ride(db.Model):
             Decimal(str(self.price_egp or 0))
             + Decimal(str(self.no_show_fee_egp or 0))
             + Decimal(str(self.captain_extra_egp or 0))
+            + Decimal(str(self.waiting_price_egp or 0))
         )
 
     @property
@@ -188,9 +201,16 @@ class Ride(db.Model):
             "service_kind": self.service_kind,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "assigned_at": self.assigned_at.isoformat() if self.assigned_at else None,
+            "arrived_at": self.arrived_at.isoformat() if self.arrived_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "cancel_reason": self.cancel_reason,
+            "waiting_seconds": int(self.waiting_seconds or 0),
+            "waiting_started_at": (
+                self.waiting_started_at.isoformat()
+                if self.waiting_started_at else None
+            ),
+            "waiting_price_egp": float(self.waiting_price_egp or 0),
             "rating": self.rating,
             # The customer app gates the captain card *and* the chat button on
             # this, so every path that serializes a ride has to carry it —

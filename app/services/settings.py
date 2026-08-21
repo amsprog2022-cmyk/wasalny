@@ -28,6 +28,11 @@ PRICING_KEYS = (
     "pricing_min_egp",
     "pricing_max_egp",
     "commission_rate",
+    # Waiting-time charging. Rate per full hour + a free grace period at
+    # pickup; captain toggles a button during the trip to accumulate
+    # billable minutes (see ride_lifecycle.complete for the math).
+    "pricing_per_waiting_hour_egp",
+    "pricing_free_wait_minutes",
 )
 
 # Fallback source when a key hasn't been written yet. Reads the same
@@ -38,6 +43,8 @@ _CONFIG_DEFAULTS = {
     "pricing_min_egp":    ("PRICING_MIN_EGP",    "15"),
     "pricing_max_egp":    ("PRICING_MAX_EGP",    "500"),
     "commission_rate":    ("WASSALNY_COMMISSION_RATE", "0.15"),
+    "pricing_per_waiting_hour_egp": ("PRICING_PER_WAITING_HOUR_EGP", "30"),
+    "pricing_free_wait_minutes":    ("PRICING_FREE_WAIT_MINUTES",    "5"),
 }
 
 
@@ -69,12 +76,21 @@ def get_pricing() -> dict:
             _, fallback = _CONFIG_DEFAULTS[key]
             return Decimal(fallback)
 
+    def _int(key: str) -> int:
+        try:
+            return int(Decimal(_get_or_default(key)))
+        except Exception:  # noqa: BLE001
+            _, fallback = _CONFIG_DEFAULTS[key]
+            return int(fallback)
+
     return {
         "base_egp":        _dec("pricing_base_egp"),
         "per_km_egp":      _dec("pricing_per_km_egp"),
         "min_egp":         _dec("pricing_min_egp"),
         "max_egp":         _dec("pricing_max_egp"),
         "commission_rate": _dec("commission_rate"),
+        "per_waiting_hour_egp": _dec("pricing_per_waiting_hour_egp"),
+        "free_wait_minutes":    _int("pricing_free_wait_minutes"),
     }
 
 

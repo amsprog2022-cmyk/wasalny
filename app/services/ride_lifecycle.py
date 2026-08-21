@@ -343,6 +343,10 @@ def arrived(ride: Ride, actor_driver_id: int) -> None:
     if ride.driver_id != actor_driver_id:
         raise PermissionError("Only the assigned captain can mark arrived.")
 
+    # Stamp the arrival time only once — captains sometimes double-tap the
+    # button and we don't want the waiting grace period to reset.
+    if ride.arrived_at is None:
+        ride.arrived_at = datetime.utcnow()
     _record(ride.id, "arrived", "driver")
     db.session.commit()
 
@@ -412,6 +416,30 @@ def complete(ride: Ride, actor_driver_id: int) -> None:
     driver = db.session.get(Driver, actor_driver_id)
     if driver is not None:
         driver.total_trips = (driver.total_trips or 0) + 1
+
+    # Waiting-time finalization — MUST run before the wallet calls below so
+    # they see the true `total_egp` (which now includes `waiting_price_egp`)
+    # and the true `commission_egp` (bumped for the waiting share). If the
+    # captain left a session open, close it first with the same math the
+    # /waiting/toggle "stop" branch uses.
+    from app.services import settings as settings_svc
+    if ride.waiting_started_at is not None:
+        elapsed = (datetime.utcnow() - ride.waiting_started_at).total_seconds()
+        ride.waiting_seconds = int(ride.waiting_seconds or 0) + max(0, int(elapsed))
+        ride.waiting_started_at = None
+    conf = settings_svc.get_pricing()
+    free_secs = int(conf["free_wait_minutes"]) * 60
+    per_hour = conf["per_waiting_hour_egp"]
+    billable_secs = max(0, int(ride.waiting_seconds or 0) - free_secs)
+    if billable_secs > 0:
+        price = (
+            Decimal(billable_secs) / Decimal(3600) * per_hour
+        ).quantize(Decimal("0.01"))
+        ride.waiting_price_egp = price
+        # Waiting money is treated exactly like fare — commission split
+        # applies. Bump commission_egp so captain-wallet debt stays honest.
+        commission_delta = (price * conf["commission_rate"]).quantize(Decimal("0.01"))
+        ride.commission_egp = Decimal(str(ride.commission_egp or 0)) + commission_delta
 
     # Money, all inside the same transaction as the status change so a
     # completed ride can never exist without its ledger entries: spend any

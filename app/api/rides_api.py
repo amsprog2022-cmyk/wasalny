@@ -1255,6 +1255,87 @@ def rides_complete(ride_id: int):
     return jsonify(ride.to_dict(include_customer_contact=True))
 
 
+@rides_api_bp.post("/rides/<int:ride_id>/waiting/toggle")
+@jwt_required()
+def rides_waiting_toggle(ride_id: int):
+    """Toggle the waiting-time meter for the captain of this trip.
+
+    Body: {"action": "start" | "stop"}. Returns the full ride so the
+    client can render the updated counter + price in one round-trip.
+
+    Rules:
+      - Only the assigned captain may toggle.
+      - Only allowed while the ride is `assigned` or `started`.
+      - `start` while a session is already open → 409 (idempotency guard).
+      - `stop` while no session is open → 409 (nothing to close).
+      - `start` before the free grace period elapses on an `assigned`
+        ride → 409. Mid-trip toggles skip the grace check because that
+        time is already earned.
+    """
+    from datetime import datetime as _dt
+    from app.services import settings as settings_svc
+
+    did = _driver_id_from_jwt()
+    if did is None:
+        return jsonify({"error": "driver_token_required"}), 403
+    ride = db.session.get(Ride, ride_id)
+    if ride is None:
+        return jsonify({"error": "not_found"}), 404
+    if ride.driver_id != did:
+        return jsonify({"error": "not_your_ride"}), 403
+    if ride.status not in ("assigned", "started"):
+        return jsonify({"error": "wrong_status", "status": ride.status}), 409
+
+    data = request.json or {}
+    action = (data.get("action") or "").strip().lower()
+    if action not in ("start", "stop"):
+        return jsonify({"error": "action must be 'start' or 'stop'"}), 400
+
+    now = _dt.utcnow()
+    if action == "start":
+        if ride.waiting_started_at is not None:
+            return jsonify({"error": "already_started"}), 409
+        # Grace period only applies at pickup — mid-trip stops are billable
+        # immediately (the customer chose to hold up the trip).
+        if ride.status == "assigned":
+            if ride.arrived_at is None:
+                return jsonify({"error": "not_arrived_yet"}), 409
+            conf = settings_svc.get_pricing()
+            free_secs = int(conf["free_wait_minutes"]) * 60
+            elapsed_since_arrived = (now - ride.arrived_at).total_seconds()
+            if elapsed_since_arrived < free_secs:
+                remaining = int(free_secs - elapsed_since_arrived)
+                return jsonify({
+                    "error": "grace_period",
+                    "seconds_remaining": remaining,
+                }), 409
+        ride.waiting_started_at = now
+        db.session.add(RideStatusEvent(
+            ride_id=ride.id,
+            event="waiting_started",
+            actor="driver",
+            payload_json=json.dumps({"at": now.isoformat()}),
+        ))
+    else:  # stop
+        if ride.waiting_started_at is None:
+            return jsonify({"error": "not_started"}), 409
+        elapsed = (now - ride.waiting_started_at).total_seconds()
+        elapsed = max(0, int(elapsed))
+        ride.waiting_seconds = int(ride.waiting_seconds or 0) + elapsed
+        ride.waiting_started_at = None
+        db.session.add(RideStatusEvent(
+            ride_id=ride.id,
+            event="waiting_stopped",
+            actor="driver",
+            payload_json=json.dumps({
+                "elapsed_seconds": elapsed,
+                "total_seconds": int(ride.waiting_seconds),
+            }),
+        ))
+    db.session.commit()
+    return jsonify(ride.to_dict(include_customer_contact=True))
+
+
 @rides_api_bp.patch("/rides/<int:ride_id>/price")
 @jwt_required()
 def rides_update_price(ride_id: int):

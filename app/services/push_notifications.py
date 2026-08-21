@@ -118,7 +118,7 @@ def _build_message(m, string_data: dict, *, title: str, body: str,
     # Channel id must match the Dart client (`_rideOfferChannelId`).
     # Only referenced when we attach a notification block — trip-offered
     # stays data-only on Android so the Dart handler renders the alarm.
-    channel_id = "ride_offer_v2" if is_ride_offer else "wassalny_default"
+    channel_id = "ride_offer_v3" if is_ride_offer else "wassalny_default"
 
     if is_ride_offer:
         # Preserve title/body inside data — the Dart killed-state handler
