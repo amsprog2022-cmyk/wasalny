@@ -34,6 +34,12 @@ _EG_MOBILE_PREFIX = re.compile(r"^1[0125]\d{8}$")
 
 _OFFICE_CACHE_TTL = 60
 
+# Dedup window: same office pasting the same customer number twice within
+# this many seconds is treated as an accidental double-tap, not two trips.
+# Prevents two captains driving to the same person because the dispatcher
+# double-sent while switching devices or hit the wrong button.
+_OFFICE_DEDUP_TTL = 180
+
 
 # ---------- office number registry ----------
 
@@ -87,6 +93,28 @@ def invalidate_cache(wa_id: str) -> None:
         get_redis(current_app.config.get("REDIS_URL")).delete(f"office:is:{wa_id}")
     except Exception:  # noqa: BLE001
         pass
+
+
+def _claim_dedup_slot(office_wa_id: str, customer_wa_id: str) -> bool:
+    """Return True when this (office, customer) pair was already claimed in
+    the last _OFFICE_DEDUP_TTL seconds — meaning the current message is a
+    duplicate and the caller should refuse it.
+
+    Uses Redis SET NX EX so the check-and-set is atomic. Two parallel
+    greenlets processing back-to-back webhook messages can't both win. If
+    Redis is unreachable we fail open — better a rare duplicate ride than
+    a total dispatch outage.
+    """
+    key = f"office:dup:{office_wa_id}:{customer_wa_id}"
+    try:
+        r = get_redis(current_app.config.get("REDIS_URL"))
+        # set(nx=True) returns True on the first claim, None if the key
+        # already existed → duplicate.
+        claimed = r.set(key, "1", nx=True, ex=_OFFICE_DEDUP_TTL)
+        return not claimed
+    except Exception as e:  # noqa: BLE001
+        current_app.logger.warning("office dedup check failed, allowing: %s", e)
+        return False
 
 
 # ---------- parsing ----------
@@ -355,6 +383,20 @@ def handle_office_message(office_wa_id: str, body: str) -> None:
             office_wa_id,
             "مش قادرين نقرا رقم العميل في الرسالة دي. "
             "ابعت الرقم بصيغة 01xxxxxxxxx ومعاه المكان.",
+        )
+        return
+
+    # Duplicate-office-ride guard. Two identical pastes (same office → same
+    # customer phone) within the dedup window are almost always a mistake:
+    # dispatcher double-tapped, or switched to another device and re-sent
+    # thinking the first didn't go through. Without this, we'd create two
+    # rides and two captains would drive to the same customer. Atomic via
+    # Redis SET NX so parallel greenlets can't both win.
+    if _claim_dedup_slot(office_wa_id, phone):
+        _reply(
+            office_wa_id,
+            f"الطلب ده اتبعتلنا قبل كده للعميل {phone} — "
+            "لسه بنشتغل عليه، مش هنعمله تاني.",
         )
         return
 
