@@ -318,12 +318,15 @@ def reset_all_passwords():
         flash("للأدمن بس.", "error")
         return redirect(url_for("drivers.index"))
     from flask import current_app
+    import bcrypt
     default_pw = current_app.config["DEFAULT_CAPTAIN_PASSWORD"]
-    # Hash once, reuse the same hash for every row — avoids N bcrypt rounds
-    # (each ~100 ms) that would otherwise hold the request open for minutes
-    # on a real captain fleet.
-    from werkzeug.security import generate_password_hash
-    shared_hash = generate_password_hash(default_pw)
+    # MUST use bcrypt.hashpw — Driver.check_password uses bcrypt.checkpw,
+    # which will silently reject Werkzeug-format hashes. Hash once, reuse
+    # the same hash for every row so a fleet of hundreds finishes in one
+    # SQL update instead of N bcrypt rounds (~100 ms each).
+    shared_hash = bcrypt.hashpw(
+        default_pw.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
     updated = (
         Driver.query
         .filter(Driver.deleted_at.is_(None))
