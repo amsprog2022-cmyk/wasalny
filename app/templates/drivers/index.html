@@ -11,6 +11,13 @@
       <div class="flex gap-2">
         <a href="{{ url_for('captain_signup.register') }}" target="_blank" class="btn-ghost">🔗 لينك التسجيل</a>
         <a href="{{ url_for('drivers.create') }}" class="btn-primary">+ ضيف كابتن</a>
+        <form method="post" action="{{ url_for('drivers.reset_all_passwords') }}"
+              onsubmit="return prompt('ده هيرجّع كلمة السر لكل الكباتن للافتراضية ويطلب منهم يغيروها. اكتب RESET للتأكيد:') === 'RESET';">
+          <button type="submit" class="btn-ghost"
+                  style="border-color: rgba(220,53,69,0.6); color: #ff6b6b;">
+            🔑 رجّع كلمة السر للكل
+          </button>
+        </form>
       </div>
     {% endif %}
   </div>

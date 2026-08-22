@@ -303,3 +303,38 @@ def reset_password(driver_id: int):
     db.session.commit()
     flash("تم رجوع كلمة السر للافتراضية.", "success")
     return redirect(url_for("drivers.show", driver_id=driver_id))
+
+
+@drivers_bp.route("/reset-all-passwords", methods=["POST"])
+@login_required
+def reset_all_passwords():
+    """Bulk-reset every non-deleted captain to the default password.
+
+    Nuclear option — invalidates every captain's current login. They'll be
+    forced to change on next sign-in (must_change_password flag). Skips
+    deleted rows so a "forgotten" account can't be resurrected via this.
+    """
+    if not current_user.is_admin:
+        flash("للأدمن بس.", "error")
+        return redirect(url_for("drivers.index"))
+    from flask import current_app
+    default_pw = current_app.config["DEFAULT_CAPTAIN_PASSWORD"]
+    # Hash once, reuse the same hash for every row — avoids N bcrypt rounds
+    # (each ~100 ms) that would otherwise hold the request open for minutes
+    # on a real captain fleet.
+    from werkzeug.security import generate_password_hash
+    shared_hash = generate_password_hash(default_pw)
+    updated = (
+        Driver.query
+        .filter(Driver.deleted_at.is_(None))
+        .update(
+            {
+                Driver.password_hash: shared_hash,
+                Driver.must_change_password: True,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.session.commit()
+    flash(f"تم رجوع كلمة السر لـ {updated} كابتن للافتراضية.", "success")
+    return redirect(url_for("drivers.index"))
