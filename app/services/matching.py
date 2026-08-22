@@ -596,24 +596,36 @@ def _office_ranked_candidates(
     if not eligible:
         return []
 
-    # Batch the busy-check + GEO fetch in one Redis pipeline. On Railway's
-    # external Redis (~1 ms/call), the difference between 300 sequential
-    # calls and 1 pipelined round-trip is ~1s of pure network wait per
-    # matching cycle, per unmatched trip.
+    # Batch the busy-check + availability-toggle + GEO fetch in one Redis
+    # pipeline. On Railway's external Redis (~1 ms/call), the difference
+    # between 900 sequential calls and 1 pipelined round-trip is ~1s of
+    # pure network wait per matching cycle, per unmatched trip.
     with r.pipeline(transaction=False) as pipe:
         for did, _, _ in eligible:
             pipe.exists(f"driver:{did}:current_ride")
+            pipe.hget(f"driver:{did}:status", "available")
             pipe.geopos(GEO_KEY, str(did))
         pipe_results = pipe.execute()
 
     ranked: list[tuple[float, int]] = []
     positionless: list[int] = []
     for i, (did, snap_lat, snap_lng) in enumerate(eligible):
-        busy = bool(pipe_results[i * 2])
+        busy = bool(pipe_results[i * 3])
         if busy:
             continue
 
-        geo = pipe_results[i * 2 + 1]
+        # Only skip captains who have EXPLICITLY toggled themselves off
+        # (available='0'). A captain who never signed in / whose app is
+        # closed will have no status hash at all (returns None) — we still
+        # FCM them, since they haven't said no. A captain who set 'available'
+        # to '1' or anything but '0' also comes through.
+        avail = pipe_results[i * 3 + 1]
+        if isinstance(avail, (bytes, bytearray)):
+            avail = avail.decode()
+        if avail == "0":
+            continue
+
+        geo = pipe_results[i * 3 + 2]
         pos: tuple[float, float] | None = None
         if geo and geo[0] is not None:
             lng, lat = geo[0]
@@ -657,8 +669,25 @@ def _office_rest_candidates(tried: set[int]) -> list[int]:
     with r.pipeline(transaction=False) as pipe:
         for did in candidates:
             pipe.exists(f"driver:{did}:current_ride")
-        busy_flags = pipe.execute()
-    return [did for did, busy in zip(candidates, busy_flags) if not busy]
+            pipe.hget(f"driver:{did}:status", "available")
+        results = pipe.execute()
+
+    def _is_off(v) -> bool:
+        # Captain explicitly toggled themselves unavailable. None (no
+        # status hash yet) does NOT count — those captains still get
+        # pinged so they can start working.
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode()
+        return v == "0"
+
+    out = []
+    for i, did in enumerate(candidates):
+        busy = bool(results[i * 2])
+        avail = results[i * 2 + 1]
+        if busy or _is_off(avail):
+            continue
+        out.append(did)
+    return out
 
 
 # ---------- chained rides (en-route matching) ----------
