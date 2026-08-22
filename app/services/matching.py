@@ -465,12 +465,12 @@ def match_office_ride(ride_id: int, pending_fee_ids: list[int] | None = None) ->
     if ride.status in ("assigned", "started", "completed", "cancelled", "cancelled_no_show", "queued"):
         return
 
-    # Chained ride reservation runs first — same as the app path. Office
-    # queue-hits get the exact same office reply as a normal assignment,
-    # because try_queue_ride fires notify_office_assigned itself.
-    if try_queue_ride(ride):
-        return
-
+    # Office rides deliberately skip the chained-ride hand-off. The office
+    # dispatcher expects "this ride is going out RIGHT NOW to a free
+    # captain" — not "queued behind another trip that hasn't finished."
+    # Otherwise the same captain gets announced for two trips in the same
+    # minute (see 2026-08 report), and the office tells two customers a
+    # car is on the way when only one actually is.
     ride_lifecycle.mark_broadcasting(ride)
     tried: set[int] = set()
     winner: Optional[int] = None
